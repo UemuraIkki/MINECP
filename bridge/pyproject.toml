@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minecp-bridge"
+version = "0.1.0"
+description = "Python bridge between the Fabric Mod (Fake Player agent) and Ollama, for the Minecraft autonomous-play LLM agent project."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.6,<3",
+    "websockets>=12.0,<13",
+    "httpx>=0.27,<1",
+    "jsonschema>=4.18,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+minecp-bridge = "minecp_bridge.__main__:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
