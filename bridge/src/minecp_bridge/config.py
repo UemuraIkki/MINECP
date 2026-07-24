@@ -33,7 +33,7 @@ class BridgeConfig:
 
     # Ollama HTTP API
     ollama_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen2.5:14b"
+    ollama_model: str = "qwen3:4b"
     ollama_timeout_s: float = 120.0
 
     # Filesystem layout

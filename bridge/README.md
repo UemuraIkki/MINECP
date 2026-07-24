@@ -31,7 +31,7 @@ Ollama・Minecraft(Mod)は不要。LLM呼び出しは `httpx.MockTransport` で�
 
 ## 起動
 
-Ollamaが起動していること(既定 `http://127.0.0.1:11434`、モデル `qwen2.5:14b` を pull 済みであること)。
+Ollamaが起動していること(既定 `http://127.0.0.1:11434`、モデル `qwen3:4b` を pull 済みであること)。
 
 ```powershell
 python -m minecp_bridge
@@ -51,7 +51,7 @@ python -m minecp_bridge
 | WebSocketホスト | `MINECP_BRIDGE_WS_HOST` | `127.0.0.1` |
 | WebSocketポート | `MINECP_BRIDGE_WS_PORT` | `8765` |
 | Ollama URL | `MINECP_BRIDGE_OLLAMA_URL` | `http://127.0.0.1:11434` |
-| Ollamaモデル | `MINECP_BRIDGE_OLLAMA_MODEL` | `qwen2.5:14b` |
+| Ollamaモデル | `MINECP_BRIDGE_OLLAMA_MODEL` | `qwen3:4b` |
 | 定期見直し間隔(秒) | `MINECP_BRIDGE_PERIODIC_REVIEW_INTERVAL_S` | `120.0` |
 | LLM出力再生成の最大回数 | `MINECP_BRIDGE_MAX_LLM_RETRIES` | `3` |
 | 反省ループ発動閾値(同一スキル連続失敗回数) | `MINECP_BRIDGE_REFLECTION_FAILURE_THRESHOLD` | `3` |
@@ -84,7 +84,7 @@ ws_port = 8765
 
 - **マイルストーン達成判定はヒューリスティックである**: `milestones.py` はインベントリ内の代表的なアイテムid・`progress`カウンタ・一部のvanilla実績idから判定する。特に以下は暫定的な近似:
   - `iron_gear`: 鉄ピッケル+鉄剣所持のみで判定(防具は問わない)。
-  - `gear_final_check`: ダイヤの剣+防具4部位所持、という簡易ヒューリスティック。実際にはMod側からより明示的な「装備最終確認完了」フラグ(例: `progress.advancements` への専用エントリ追加)を仕様書・スキーマに追加する方が堅牢。**要検討・要スキーマ拡張(schema/を先に更新の上)**。
+  - `gear_final_check`: ダイヤ(またはネザライト)の剣を1本以上所持し、かつ防具4部位すべてがダイヤ以上(素材まで一致)で装備されていることを判定する。この判定はどのスキルの実行可否も制御しない(状況プロンプトへの参考情報にすぎない)ため、Mod側の明示シグナル追加・スキーマ拡張は行わないことを意図的に選択した。旧版は防具4部位が空でないことしか見ておらず革防具でも満たせてしまう穴があったため、素材チェックを追加して締めた。
   - `nether_portal`: ブリッジの記憶座標が登録されているか(`MilestoneContext.has_nether_portal`)で判定する。`agent_loop.py`の`_register_discovered_locations`が、`nearby.points_of_interest`に`nether_portal`種別のPOIが現れた時点(=Fake Playerが実際にポータルの16ブロック以内に立った時点)で記憶座標とコンテキストを配線する。build_portalの`skill_result`自体は座標を含まない(位置オラクル禁止)ため、これは`base`と同じく「実観測に基づく発見」。
   - `stronghold_found`: 2つの経路で`stronghold`座標を配線する。(1) `_register_discovered_locations`が`stronghold_block`種別のPOI(=実際に構造物の16ブロック以内に立った時点)を観測すると確定座標として登録(`stronghold_estimate_is_exact=True`)。(2) それ以前に、`agent_loop._record_ender_eye_throw`がthrow_ender_eyeの`skill_result.data.direction`を使い、十分離れた(16ブロック以上)2回以上の投擲から`BridgeState.record_ender_eye_throw`(2D光線交差)でx,z座標を三角測量し、近似値として仮登録する(y座標は投擲時点のプレイヤーのyをそのまま流用する暫定値)。(1)の確定座標は(2)の近似値を常に上書きするが、逆(近似が確定を上書き)は起きない。いずれも実際の投擲・観測という実プレイに基づく発見であり、座標を先験的に知っているわけではない。
 - **反省ループの「3回連続失敗」判定**: スキル名ごとの連続失敗カウンタ(`state.consecutive_failures`)で判定する。引数が異なっていても同一スキル名なら連続とみなす(仕様書の記述上、引数一致までは要求していないため)。
@@ -95,7 +95,6 @@ ws_port = 8765
 
 ## 未解決事項
 
-- 実機結合テスト(実際のMinecraft開発サーバー・実WebSocket・実Ollama)を1回実施済み(モデルは既定の`qwen2.5:14b`ではなく代用の`qwen3:4b`)。Fake Playerスポーン→observation→LLM決定→skill_command→Mod実行→skill_resultの一周と、mine失敗(TIMEOUT_STUCK)からgoto baseへのフォールバック復帰までを確認した。ただし1回・1モデルのみの確認であり、既定モデルでの継続実行やAutomatone有効時の挙動は未検証。
-- `gear_final_check`の判定ロジックをMod側の明示的なシグナルに置き換えるかどうかは、仕様書・スキーマの更新を伴うため別途意思決定が必要。
+- 実機結合テスト(実際のMinecraft開発サーバー・実WebSocket・実Ollama、モデルは既定の`qwen3:4b`)を1回実施済み。Fake Playerスポーン→observation→LLM決定→skill_command→Mod実行→skill_resultの一周と、mine失敗(TIMEOUT_STUCK)からgoto baseへのフォールバック復帰までを確認した。ただし1回のみの確認であり、長時間の継続実行やAutomatone有効時の挙動は未検証。
 - 要塞の三角測量(上記`stronghold_found`の項)は、投擲2点が16ブロック以上離れ、かつ2本の光線が実際に交差する(平行に近くない・交点が両投擲点より前方にある)場合のみ推定値を返す簡易ヒューリスティック。y座標は常にプレイヤーの現在yを使う暫定値であり、実際の深さではない。
 - 実際のOllama tool calling応答フォーマットは環境(Ollamaバージョン・モデル)によって`arguments`が文字列/オブジェクトいずれで返るか揺れることがある。`llm.py`は両方を許容している。`qwen3:4b`ではオブジェクト形式で返ることを実機確認済みだが、文字列形式のケースは依然未検証。

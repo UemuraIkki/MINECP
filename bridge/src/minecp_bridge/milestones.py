@@ -36,6 +36,14 @@ _DIAMOND_TOOLS = {"minecraft:diamond_pickaxe"}
 _FOOD_ITEMS = {"minecraft:bread", "minecraft:cooked_beef", "minecraft:cooked_porkchop", "minecraft:cooked_chicken", "minecraft:cooked_mutton", "minecraft:cooked_rabbit", "minecraft:baked_potato", "minecraft:apple", "minecraft:carrot"}
 _FOOD_SECURED_THRESHOLD = 8
 
+_DIAMOND_OR_BETTER_SWORDS = {"minecraft:diamond_sword", "minecraft:netherite_sword"}
+_DIAMOND_OR_BETTER_ARMOR_BY_SLOT = {
+    "helmet": {"minecraft:diamond_helmet", "minecraft:netherite_helmet"},
+    "chestplate": {"minecraft:diamond_chestplate", "minecraft:netherite_chestplate"},
+    "leggings": {"minecraft:diamond_leggings", "minecraft:netherite_leggings"},
+    "boots": {"minecraft:diamond_boots", "minecraft:netherite_boots"},
+}
+
 BLAZE_RODS_REQUIRED = 7
 ENDER_PEARLS_REQUIRED = 12
 ENDER_EYES_REQUIRED = 12
@@ -100,15 +108,18 @@ def is_completed(
     if milestone is Milestone.portal_activated:
         return _PORTAL_ACTIVATED_ADVANCEMENT in advancements
     if milestone is Milestone.gear_final_check:
-        has_diamond_sword = counts.get("minecraft:diamond_sword", 0) > 0
-        armor_pieces = [
-            observation.equipment.helmet,
-            observation.equipment.chestplate,
-            observation.equipment.leggings,
-            observation.equipment.boots,
-        ]
-        full_armor = all(a is not None for a in armor_pieces)
-        return context.equipment_finalized or (has_diamond_sword and full_armor)
+        has_diamond_or_better_sword = _has_any(counts, _DIAMOND_OR_BETTER_SWORDS)
+        equipped_by_slot = {
+            "helmet": observation.equipment.helmet,
+            "chestplate": observation.equipment.chestplate,
+            "leggings": observation.equipment.leggings,
+            "boots": observation.equipment.boots,
+        }
+        full_diamond_or_better_armor = all(
+            equipped_by_slot[slot] in acceptable
+            for slot, acceptable in _DIAMOND_OR_BETTER_ARMOR_BY_SLOT.items()
+        )
+        return context.equipment_finalized or (has_diamond_or_better_sword and full_diamond_or_better_armor)
     if milestone is Milestone.dragon_slain:
         return _DRAGON_SLAIN_ADVANCEMENT in advancements
     raise AssertionError(f"unhandled milestone: {milestone}")

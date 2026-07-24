@@ -65,6 +65,69 @@ def test_nether_portal_requires_external_context():
     assert is_completed(Milestone.nether_portal, obs, MilestoneContext(has_nether_portal=True))
 
 
+def _with_equipment(raw: dict, *, sword: str | None, **armor: str | None) -> dict:
+    if sword is not None:
+        raw["inventory"]["items"].append({"id": sword, "count": 1})
+    raw["equipment"].update(armor)
+    return raw
+
+
+def test_gear_final_check_rejects_non_diamond_armor():
+    raw = sample_observation_raw()
+    raw = _with_equipment(
+        raw,
+        sword="minecraft:diamond_sword",
+        helmet="minecraft:leather_helmet",
+        chestplate="minecraft:diamond_chestplate",
+        leggings="minecraft:diamond_leggings",
+        boots="minecraft:diamond_boots",
+    )
+    obs = Observation.model_validate(raw)
+    assert not is_completed(Milestone.gear_final_check, obs)
+
+
+def test_gear_final_check_rejects_missing_armor_piece():
+    raw = sample_observation_raw()
+    raw = _with_equipment(
+        raw,
+        sword="minecraft:diamond_sword",
+        helmet="minecraft:diamond_helmet",
+        chestplate="minecraft:diamond_chestplate",
+        leggings="minecraft:diamond_leggings",
+        boots=None,
+    )
+    obs = Observation.model_validate(raw)
+    assert not is_completed(Milestone.gear_final_check, obs)
+
+
+def test_gear_final_check_accepts_full_diamond_kit():
+    raw = sample_observation_raw()
+    raw = _with_equipment(
+        raw,
+        sword="minecraft:diamond_sword",
+        helmet="minecraft:diamond_helmet",
+        chestplate="minecraft:diamond_chestplate",
+        leggings="minecraft:diamond_leggings",
+        boots="minecraft:diamond_boots",
+    )
+    obs = Observation.model_validate(raw)
+    assert is_completed(Milestone.gear_final_check, obs)
+
+
+def test_gear_final_check_accepts_netherite_upgrade():
+    raw = sample_observation_raw()
+    raw = _with_equipment(
+        raw,
+        sword="minecraft:netherite_sword",
+        helmet="minecraft:netherite_helmet",
+        chestplate="minecraft:diamond_chestplate",
+        leggings="minecraft:netherite_leggings",
+        boots="minecraft:diamond_boots",
+    )
+    obs = Observation.model_validate(raw)
+    assert is_completed(Milestone.gear_final_check, obs)
+
+
 def test_current_milestone_is_first_incomplete_in_order():
     completed = {Milestone.wood, Milestone.wooden_tools}
     assert current_milestone(completed) is Milestone.stone_tools

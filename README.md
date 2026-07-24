@@ -33,7 +33,7 @@ Ollama上のローカルLLM(Qwen系想定)に人間の介入なしでMinecraft�
 ### 1. Ollama
 
 ```
-ollama pull qwen2.5:14b
+ollama pull qwen3:4b
 ollama serve   # 既定: http://127.0.0.1:11434
 ```
 
