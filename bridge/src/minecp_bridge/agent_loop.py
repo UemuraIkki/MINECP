@@ -23,6 +23,7 @@ from .messages import (
     AttackedEvent,
     BlockPos,
     DeathEvent,
+    Dimension,
     Event,
     FailureCode,
     GotoArgs,
@@ -30,6 +31,7 @@ from .messages import (
     ItemPickupEvent,
     NamedLocation,
     Observation,
+    PointOfInterestKind,
     RespawnedEvent,
     SkillName,
     SkillResult,
@@ -125,6 +127,8 @@ class AgentLoop:
                     BlockPos(x=round(pos.x), y=round(pos.y), z=round(pos.z)),
                 )
 
+        self._register_discovered_locations(observation)
+
         completed = evaluate_all(observation, self._milestone_context)
         self.state.set_completed_milestones(completed)
         self._save_state()
@@ -135,6 +139,32 @@ class AgentLoop:
         # via on_event; "periodic" observations just refresh state, with the
         # periodic review timer (not the observation itself) driving
         # re-planning on that cadence.
+
+    def _register_discovered_locations(self, observation: Observation) -> None:
+        """Registers memory coordinates once the block scanner spots a portal
+        or stronghold structure within its 16-block radius.
+
+        Neither build_portal's result nor throw_ender_eye's result carries a
+        coordinate (仕様書/ADR-0001: no location oracle — direction/survival
+        only). Standing near the real block, like the existing "base"
+        registration from self.pos, is the only ground truth the bridge is
+        allowed to use.
+        """
+        for poi in observation.nearby.points_of_interest:
+            if poi.kind is PointOfInterestKind.nether_portal:
+                location = (
+                    NamedLocation.nether_portal_nether
+                    if observation.self_.dimension is Dimension.nether
+                    else NamedLocation.nether_portal_overworld
+                )
+                if self.state.get_memory(location) is None:
+                    self.state.register_memory(location, poi.pos)
+                    if location is NamedLocation.nether_portal_overworld:
+                        self._milestone_context.has_nether_portal = True
+            elif poi.kind is PointOfInterestKind.stronghold_block:
+                if self.state.get_memory(NamedLocation.stronghold) is None:
+                    self.state.register_memory(NamedLocation.stronghold, poi.pos)
+                    self._milestone_context.has_stronghold_location = True
 
     async def on_skill_result(self, result: SkillResult) -> None:
         self.session_logger.log_skill_result(to_wire(result))

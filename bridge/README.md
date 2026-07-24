@@ -85,7 +85,7 @@ ws_port = 8765
 - **マイルストーン達成判定はヒューリスティックである**: `milestones.py` はインベントリ内の代表的なアイテムid・`progress`カウンタ・一部のvanilla実績idから判定する。特に以下は暫定的な近似:
   - `iron_gear`: 鉄ピッケル+鉄剣所持のみで判定(防具は問わない)。
   - `gear_final_check`: ダイヤの剣+防具4部位所持、という簡易ヒューリスティック。実際にはMod側からより明示的な「装備最終確認完了」フラグ(例: `progress.advancements` への専用エントリ追加)を仕様書・スキーマに追加する方が堅牢。**要検討・要スキーマ拡張(schema/を先に更新の上)**。
-  - `nether_portal` / `stronghold_found`: ブリッジの記憶座標が登録されているか(`MilestoneContext.has_nether_portal` / `has_stronghold_location`)で判定する外部コンテキストが必要。`agent_loop.py` は現時点でこれらのコンテキストを未配線(常に `False`)。build_portal成功時・throw_ender_eye到達時にセットする配線は今後の実装課題。
+  - `nether_portal` / `stronghold_found`: ブリッジの記憶座標が登録されているか(`MilestoneContext.has_nether_portal` / `has_stronghold_location`)で判定する。`agent_loop.py`の`_register_discovered_locations`が、`nearby.points_of_interest`に`nether_portal`/`stronghold_block`種別のPOIが現れた時点(=Fake Playerがその構造物の16ブロック以内に実際に立った時点)で記憶座標とコンテキストを配線する。build_portal/throw_ender_eyeの`skill_result`自体は座標を含まない(位置オラクル禁止)ため、これは`base`と同じく「実観測に基づく発見」であり、事前に座標を知っているわけではない。**未対応**: throw_ender_eyeが返す方向ベクトル(`data.direction`)を使った複数地点からの三角測量は未実装で、要塞の座標は現状、実際に近づいて`stronghold_block`が観測範囲に入るまで登録されない。
 - **反省ループの「3回連続失敗」判定**: スキル名ごとの連続失敗カウンタ(`state.consecutive_failures`)で判定する。引数が異なっていても同一スキル名なら連続とみなす(仕様書の記述上、引数一致までは要求していないため)。
 - **死亡リカバリのアイテム消滅タイマー**: バニラ既定の5分(`item_despawn_s=300`)を既定値としている。ゲームルール変更時は設定で上書き可能。
 - **`skill_command.args`のバリデーション**: LLMのtool呼び出し引数は各スキルのPydantic Argsモデル(`SKILL_ARGS_CLASSES`)で検証する。これは`schema/skill_command.schema.json`の`oneOf`条件と同じ制約を表現している。
@@ -94,6 +94,7 @@ ws_port = 8765
 
 ## 未解決事項
 
-- `mod/` 側の実装が未着手のため、実際のWebSocket通信・Automatone経路探索・戦闘スクリプトとの結合テストは未実施(本パッケージのテストはOllama・Minecraftを使わないユニットテストのみ)。
-- `gear_final_check` / `nether_portal` / `stronghold_found` の判定ロジックをMod側の明示的なシグナルに置き換えるかどうかは、仕様書・スキーマの更新を伴うため別途意思決定が必要。
+- `mod/`側は全12スキル実装済み・ビルド成功済みだが、実際のMinecraftサーバー・実Ollamaを繋いだ結合テストは未実施(本パッケージのテスト・`test_e2e_loop.py`はいずれもモックWebSocketクライアント/モックOllamaのみで、実機は使わない)。
+- `gear_final_check`の判定ロジックをMod側の明示的なシグナルに置き換えるかどうかは、仕様書・スキーマの更新を伴うため別途意思決定が必要。
+- throw_ender_eyeの方向ベクトルを使った要塞座標の三角測量は未実装(上記`stronghold_found`の項を参照)。
 - 実際のOllama tool calling応答フォーマットは環境(Ollamaバージョン・モデル)によって`arguments`が文字列/オブジェクトいずれで返るか揺れることがある。`llm.py`は両方を許容しているが、実機での検証は未実施。
