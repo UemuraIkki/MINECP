@@ -71,7 +71,7 @@ ws_port = 8765
 | `messages.py` | `schema/` と1:1のPydanticモデル(4メッセージ種別・FailureCode・共通型) |
 | `schema_validation.py` | `schema/*.schema.json` を使ったJSON Schema検証(受信メッセージを最初に通す関門) |
 | `ws_server.py` | WebSocketサーバー。スキーマ検証 → Pydanticモデル化 → ディスパッチ。切断・再接続に耐える |
-| `state.py` | 状態管理 + `state/state.json` へのアトミックな永続化 |
+| `state.py` | 状態管理 + `state/state.json` へのアトミックな永続化。要塞の光線交差三角測量もここに実装 |
 | `milestones.py` | マイルストーンDAG(14ノード)と、観測・記憶からの達成判定ヒューリスティック |
 | `prompts.py` | システムプロンプト・状況プロンプト・反省プロンプト・死亡リカバリプロンプトの構築(英語) |
 | `llm.py` | Ollama `/api/chat` クライアント。tool calling→スキーマ検証→最大3回再生成→フォールバック(goto base) |
@@ -85,7 +85,8 @@ ws_port = 8765
 - **マイルストーン達成判定はヒューリスティックである**: `milestones.py` はインベントリ内の代表的なアイテムid・`progress`カウンタ・一部のvanilla実績idから判定する。特に以下は暫定的な近似:
   - `iron_gear`: 鉄ピッケル+鉄剣所持のみで判定(防具は問わない)。
   - `gear_final_check`: ダイヤの剣+防具4部位所持、という簡易ヒューリスティック。実際にはMod側からより明示的な「装備最終確認完了」フラグ(例: `progress.advancements` への専用エントリ追加)を仕様書・スキーマに追加する方が堅牢。**要検討・要スキーマ拡張(schema/を先に更新の上)**。
-  - `nether_portal` / `stronghold_found`: ブリッジの記憶座標が登録されているか(`MilestoneContext.has_nether_portal` / `has_stronghold_location`)で判定する。`agent_loop.py`の`_register_discovered_locations`が、`nearby.points_of_interest`に`nether_portal`/`stronghold_block`種別のPOIが現れた時点(=Fake Playerがその構造物の16ブロック以内に実際に立った時点)で記憶座標とコンテキストを配線する。build_portal/throw_ender_eyeの`skill_result`自体は座標を含まない(位置オラクル禁止)ため、これは`base`と同じく「実観測に基づく発見」であり、事前に座標を知っているわけではない。**未対応**: throw_ender_eyeが返す方向ベクトル(`data.direction`)を使った複数地点からの三角測量は未実装で、要塞の座標は現状、実際に近づいて`stronghold_block`が観測範囲に入るまで登録されない。
+  - `nether_portal`: ブリッジの記憶座標が登録されているか(`MilestoneContext.has_nether_portal`)で判定する。`agent_loop.py`の`_register_discovered_locations`が、`nearby.points_of_interest`に`nether_portal`種別のPOIが現れた時点(=Fake Playerが実際にポータルの16ブロック以内に立った時点)で記憶座標とコンテキストを配線する。build_portalの`skill_result`自体は座標を含まない(位置オラクル禁止)ため、これは`base`と同じく「実観測に基づく発見」。
+  - `stronghold_found`: 2つの経路で`stronghold`座標を配線する。(1) `_register_discovered_locations`が`stronghold_block`種別のPOI(=実際に構造物の16ブロック以内に立った時点)を観測すると確定座標として登録(`stronghold_estimate_is_exact=True`)。(2) それ以前に、`agent_loop._record_ender_eye_throw`がthrow_ender_eyeの`skill_result.data.direction`を使い、十分離れた(16ブロック以上)2回以上の投擲から`BridgeState.record_ender_eye_throw`(2D光線交差)でx,z座標を三角測量し、近似値として仮登録する(y座標は投擲時点のプレイヤーのyをそのまま流用する暫定値)。(1)の確定座標は(2)の近似値を常に上書きするが、逆(近似が確定を上書き)は起きない。いずれも実際の投擲・観測という実プレイに基づく発見であり、座標を先験的に知っているわけではない。
 - **反省ループの「3回連続失敗」判定**: スキル名ごとの連続失敗カウンタ(`state.consecutive_failures`)で判定する。引数が異なっていても同一スキル名なら連続とみなす(仕様書の記述上、引数一致までは要求していないため)。
 - **死亡リカバリのアイテム消滅タイマー**: バニラ既定の5分(`item_despawn_s=300`)を既定値としている。ゲームルール変更時は設定で上書き可能。
 - **`skill_command.args`のバリデーション**: LLMのtool呼び出し引数は各スキルのPydantic Argsモデル(`SKILL_ARGS_CLASSES`)で検証する。これは`schema/skill_command.schema.json`の`oneOf`条件と同じ制約を表現している。
@@ -96,5 +97,5 @@ ws_port = 8765
 
 - `mod/`側は全12スキル実装済み・ビルド成功済みだが、実際のMinecraftサーバー・実Ollamaを繋いだ結合テストは未実施(本パッケージのテスト・`test_e2e_loop.py`はいずれもモックWebSocketクライアント/モックOllamaのみで、実機は使わない)。
 - `gear_final_check`の判定ロジックをMod側の明示的なシグナルに置き換えるかどうかは、仕様書・スキーマの更新を伴うため別途意思決定が必要。
-- throw_ender_eyeの方向ベクトルを使った要塞座標の三角測量は未実装(上記`stronghold_found`の項を参照)。
+- 要塞の三角測量(上記`stronghold_found`の項)は、投擲2点が16ブロック以上離れ、かつ2本の光線が実際に交差する(平行に近くない・交点が両投擲点より前方にある)場合のみ推定値を返す簡易ヒューリスティック。y座標は常にプレイヤーの現在yを使う暫定値であり、実際の深さではない。
 - 実際のOllama tool calling応答フォーマットは環境(Ollamaバージョン・モデル)によって`arguments`が文字列/オブジェクトいずれで返るか揺れることがある。`llm.py`は両方を許容しているが、実機での検証は未実施。

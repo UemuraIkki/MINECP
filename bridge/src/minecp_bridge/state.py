@@ -53,6 +53,39 @@ class DeathRecoveryInfo(BaseModel):
     resolved: bool = False
 
 
+class EnderEyeThrow(BaseModel):
+    """One throw_ender_eye direction sample, for stronghold triangulation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    origin_x: float
+    origin_z: float
+    dir_x: float
+    dir_z: float
+
+
+_MIN_THROW_SEPARATION_SQ = 16.0 * 16.0
+_MIN_RAY_DETERMINANT = 1e-6
+
+
+def _intersect_rays(
+    x1: float, z1: float, dx1: float, dz1: float,
+    x2: float, z2: float, dx2: float, dz2: float,
+) -> tuple[float, float] | None:
+    """2D ray/ray intersection (x,z plane). Returns None if the rays are
+    near-parallel or the intersection lies behind either throw point (a
+    throw's stronghold must be ahead of where it was thrown from)."""
+
+    determinant = dx2 * dz1 - dx1 * dz2
+    if abs(determinant) < _MIN_RAY_DETERMINANT:
+        return None
+    t = (dx2 * (z2 - z1) - dz2 * (x2 - x1)) / determinant
+    s = (dx1 * (z2 - z1) - dz1 * (x2 - x1)) / determinant
+    if t <= 0 or s <= 0:
+        return None
+    return (x1 + t * dx1, z1 + t * dz1)
+
+
 class BridgeState(BaseModel):
     """The full persisted bridge state."""
 
@@ -68,6 +101,12 @@ class BridgeState(BaseModel):
 
     memory_coords: dict[str, BlockPos] = Field(default_factory=dict)
     """Keyed by NamedLocation value (base / nether_portal_overworld / ...)."""
+
+    ender_eye_throws: list[EnderEyeThrow] = Field(default_factory=list)
+    stronghold_estimate_is_exact: bool = False
+    """True once `stronghold` came from an observed stronghold_block POI
+    rather than eye-throw triangulation (the latter never overwrites the
+    former)."""
 
     action_history: list[ActionHistoryEntry] = Field(default_factory=list)
     max_history: int = 50
@@ -128,6 +167,30 @@ class BridgeState(BaseModel):
 
     def reset_failure_streak(self, skill: str) -> None:
         self.consecutive_failures[skill] = 0
+
+    def record_ender_eye_throw(
+        self, origin_x: float, origin_z: float, dir_x: float, dir_z: float
+    ) -> tuple[float, float] | None:
+        """Records one throw and returns a triangulated (x, z) stronghold
+        estimate if this throw and an earlier, sufficiently separated throw
+        intersect ahead of both. Returns None until such a pair exists
+        (仕様書/ADR-0001: no location oracle, only ray triangulation from
+        real throws — mirroring how a human player finds a stronghold)."""
+
+        throw = EnderEyeThrow(origin_x=origin_x, origin_z=origin_z, dir_x=dir_x, dir_z=dir_z)
+        for previous in reversed(self.ender_eye_throws):
+            separation_sq = (origin_x - previous.origin_x) ** 2 + (origin_z - previous.origin_z) ** 2
+            if separation_sq < _MIN_THROW_SEPARATION_SQ:
+                continue
+            estimate = _intersect_rays(
+                previous.origin_x, previous.origin_z, previous.dir_x, previous.dir_z,
+                origin_x, origin_z, dir_x, dir_z,
+            )
+            if estimate is not None:
+                self.ender_eye_throws.append(throw)
+                return estimate
+        self.ender_eye_throws.append(throw)
+        return None
 
     def register_memory(self, location: NamedLocation | str, pos: BlockPos) -> None:
         key = NamedLocation(location).value

@@ -162,9 +162,47 @@ class AgentLoop:
                     if location is NamedLocation.nether_portal_overworld:
                         self._milestone_context.has_nether_portal = True
             elif poi.kind is PointOfInterestKind.stronghold_block:
-                if self.state.get_memory(NamedLocation.stronghold) is None:
+                # A physically observed block is ground truth: it always wins
+                # over (and locks out) a triangulated guess.
+                if self.state.get_memory(NamedLocation.stronghold) is None or not self.state.stronghold_estimate_is_exact:
                     self.state.register_memory(NamedLocation.stronghold, poi.pos)
+                    self.state.stronghold_estimate_is_exact = True
                     self._milestone_context.has_stronghold_location = True
+
+    def _record_ender_eye_throw(self, result: SkillResult) -> None:
+        """Triangulates a stronghold (x, z) estimate from throw_ender_eye's
+        direction vector once two sufficiently separated throws exist.
+
+        The y-coordinate is unknowable from a throw (eyes fly roughly level,
+        not toward the stronghold's depth), so the current position's y is
+        used as a placeholder until an actual `stronghold_block` sighting
+        (see `_register_discovered_locations`) replaces it with ground truth.
+        """
+        if self.state.last_observation is None or result.data is None:
+            return
+        direction = result.data.get("direction")
+        if not isinstance(direction, dict):
+            return
+        dir_x, dir_z = direction.get("x"), direction.get("z")
+        if not isinstance(dir_x, (int, float)) or not isinstance(dir_z, (int, float)):
+            return
+        if dir_x ** 2 + dir_z ** 2 < 1e-6:
+            return  # the throw flew essentially straight up/down; no bearing to use
+
+        pos = self.state.last_observation.self_.pos
+        estimate = self.state.record_ender_eye_throw(pos.x, pos.z, dir_x, dir_z)
+        if estimate is None:
+            return
+        if self.state.get_memory(NamedLocation.stronghold) is not None and self.state.stronghold_estimate_is_exact:
+            return  # ground truth already known; don't regress to a guess
+
+        est_x, est_z = estimate
+        self.state.register_memory(
+            NamedLocation.stronghold,
+            BlockPos(x=round(est_x), y=round(pos.y), z=round(est_z)),
+        )
+        self.state.stronghold_estimate_is_exact = False
+        self._milestone_context.has_stronghold_location = True
 
     async def on_skill_result(self, result: SkillResult) -> None:
         self.session_logger.log_skill_result(to_wire(result))
@@ -173,6 +211,8 @@ class AgentLoop:
         if self.state.action_history and self.state.action_history[-1].command_id == result.command_id:
             args = self.state.action_history[-1].args
         streak = self.state.record_skill_result(result, skill, args)
+        if skill == "throw_ender_eye" and result.status == SkillStatus.success:
+            self._record_ender_eye_throw(result)
         self._save_state()
 
         if streak >= self.config.reflection_failure_threshold:
