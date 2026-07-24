@@ -14,7 +14,7 @@ from minecp_bridge.agent_loop import AgentLoop
 from minecp_bridge.config import BridgeConfig
 from minecp_bridge.llm import LLMDecision, build_skill_command
 from minecp_bridge.logging_setup import get_session_logger
-from minecp_bridge.messages import FailureCode, SkillResult, SkillStatus
+from minecp_bridge.messages import BlockPos, FailureCode, NamedLocation, SkillResult, SkillStatus
 from minecp_bridge.state import BridgeState
 
 
@@ -33,6 +33,8 @@ def _failure_result(command_id: str, seq: int) -> SkillResult:
 async def loop(tmp_path: Path) -> AgentLoop:
     config = BridgeConfig(reflection_failure_threshold=3, state_dir=tmp_path, logs_dir=tmp_path)
     state = BridgeState()
+    # 実運用では初回観測でbaseが必ず登録される。名前付きgotoの座標解決に必要。
+    state.register_memory(NamedLocation.base, BlockPos(x=0, y=64, z=0))
     session_logger = get_session_logger(tmp_path)
     async with httpx.AsyncClient() as client:
         agent = AgentLoop(config, state, client, session_logger)

@@ -26,6 +26,39 @@ Ollama上のローカルLLM(Qwen系想定)に人間の介入なしでMinecraft�
 | P4 | エンダーアイ作成、要塞発見、ポータル起動 |
 | P5 | ドラゴン討伐。ランダムシードでのクリア達成 |
 
-## セットアップ
+## セットアップ・起動手順
 
-各サブディレクトリのREADMEを参照(実装の進行に合わせて追記)。
+3プロセスを次の順で起動する(詳細は各サブディレクトリのREADME参照)。
+
+### 1. Ollama
+
+```
+ollama pull qwen2.5:14b
+ollama serve   # 既定: http://127.0.0.1:11434
+```
+
+### 2. ブリッジ(先に起動 — WebSocketサーバー側)
+
+```
+cd bridge
+python -m venv .venv && .venv\Scripts\activate
+pip install -e .[dev]
+python -m minecp_bridge   # 既定: ws://127.0.0.1:8765
+```
+
+### 3. Minecraftサーバー + Mod
+
+```
+cd mod
+gradlew build                          # jar生成(build/libs/minecp-*.jar)
+gradlew runServer                      # 開発サーバー起動(Modがブリッジへ接続)
+gradlew -Pwith_automatone=true runServer   # Automatone経路探索を有効化する場合
+```
+
+Mod起動後、Fake Playerが自動スポーンし、観測がブリッジへ流れ、LLMの意思決定でスキルが実行される。
+
+## 現在の状態
+
+- スキーマ・ブリッジ・Modの実装済み(ブリッジはpytest 50件パス、Modはビルド成功)
+- goto / mine / craft / place / eat / equip は完全実装。attack / use_portal / build_portal / fight_dragon は決定論スクリプトのP1版、smelt / throw_ender_eye はスケルトン
+- 次ステップ: フェーズP1の実機疎通(Fake Playerスポーン→WebSocket接続→goto/mine動作確認)

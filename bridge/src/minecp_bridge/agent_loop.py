@@ -16,7 +16,7 @@ import time
 import httpx
 
 from .config import BridgeConfig
-from .llm import decide_skill
+from .llm import build_fallback_command, decide_skill
 from .logging_setup import SessionLogger
 from .messages import (
     AdvancementEvent,
@@ -24,12 +24,16 @@ from .messages import (
     BlockPos,
     DeathEvent,
     Event,
+    FailureCode,
+    GotoArgs,
     HpCriticalEvent,
     ItemPickupEvent,
     NamedLocation,
     Observation,
     RespawnedEvent,
+    SkillName,
     SkillResult,
+    SkillStatus,
     to_wire,
 )
 from .milestones import MilestoneContext, evaluate_all
@@ -221,16 +225,31 @@ class AgentLoop:
 
             self.session_logger.log_prompt(reason, system_prompt, user_prompt)
 
-            decision = await decide_skill(
-                self.http_client,
-                self.config,
-                system_prompt,
-                user_prompt,
-                seq=self._next_seq(),
-                exchange_logger=self.session_logger,
-            )
+            # The Mod only accepts explicit coordinates for goto (ADR-0001の帰結:
+            # 名前付き地点はブリッジだけが知っている)。未知の名前が返されたら、
+            # その失敗を履歴に載せて一度だけ再決定させ、駄目なら拠点帰還に落とす。
+            command = None
+            for _ in range(2):
+                decision = await decide_skill(
+                    self.http_client,
+                    self.config,
+                    system_prompt,
+                    user_prompt,
+                    seq=self._next_seq(),
+                    exchange_logger=self.session_logger,
+                )
+                resolved = self._resolve_named_goto(decision.command)
+                if resolved is not None:
+                    command = resolved
+                    break
+                self._record_unresolved_goto(decision.command)
+                user_prompt = build_situation_prompt(self.state, self.state.completed_milestones)
+            if command is None:
+                command = self._resolve_named_goto(build_fallback_command(seq=self._next_seq()))
+                if command is None:
+                    logger.error("Fallback 'goto base' is unresolvable (no base coordinates recorded yet); skipping this decision")
+                    return
 
-            command = decision.command
             self.session_logger.log_skill_command(to_wire(command))
             self.state.record_command_issued(
                 command.skill.value,
@@ -245,6 +264,40 @@ class AgentLoop:
             raise
         except Exception:
             logger.exception("Unexpected error in decision loop (reason=%s)", reason)
+
+    def _resolve_named_goto(self, command):
+        """goto の NamedLocation ターゲットを記憶座標に置換する。
+
+        Modは現在状態しか知らないため名前付き地点を解決できない(ADR-0001)。
+        解決できない名前なら None を返す。goto以外・座標指定はそのまま返す。
+        """
+        if command.skill != SkillName.goto:
+            return command
+        target = command.args.target
+        if not isinstance(target, NamedLocation):
+            return command
+        pos = self.state.get_memory(target)
+        if pos is None:
+            return None
+        return command.model_copy(update={"args": GotoArgs(target=pos)})
+
+    def _record_unresolved_goto(self, command) -> None:
+        """未知の名前付き地点へのgotoを、Modに送らずに合成失敗として履歴に記録する。"""
+        target = command.args.target
+        now_ms = int(time.time() * 1000)
+        args_json = command.args.model_dump(mode="json")
+        self.state.record_command_issued(command.skill.value, command.command_id, args_json, now_ms)
+        synthetic = SkillResult(
+            timestamp_ms=now_ms,
+            seq=self._next_seq(),
+            command_id=command.command_id,
+            status=SkillStatus.failure,
+            failure_code=FailureCode.TARGET_NOT_FOUND,
+            detail=f"bridge: no remembered coordinates for named location '{getattr(target, 'value', target)}'",
+        )
+        self.state.record_skill_result(synthetic, command.skill.value, args_json)
+        self.session_logger.log_skill_result(to_wire(synthetic))
+        self._save_state()
 
     async def _periodic_review_loop(self) -> None:
         try:
