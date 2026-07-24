@@ -11,20 +11,30 @@ import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.EndPortalFrameBlock;
+import net.minecraft.block.entity.AbstractFurnaceBlockEntity;
+import net.minecraft.block.pattern.BlockPattern;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.EyeOfEnderEntity;
+import net.minecraft.entity.ItemEntity;
+import net.minecraft.entity.attribute.EntityAttributeModifier;
+import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.boss.dragon.EnderDragonEntity;
+import net.minecraft.entity.boss.dragon.phase.PhaseType;
 import net.minecraft.entity.decoration.EndCrystalEntity;
 import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.entity.projectile.ArrowEntity;
 import net.minecraft.item.ArmorItem;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.recipe.AbstractCookingRecipe;
 import net.minecraft.recipe.CraftingRecipe;
 import net.minecraft.recipe.Ingredient;
 import net.minecraft.recipe.RecipeType;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.StructureTags;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.Hand;
@@ -33,6 +43,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
+import net.minecraft.world.WorldEvents;
 import org.slf4j.Logger;
 
 import java.util.ArrayList;
@@ -43,6 +54,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -322,11 +334,10 @@ public final class SkillManager {
                     args.get("item").getAsString(),
                     args.get("count").getAsInt()
             );
-            case "smelt" -> new UnsupportedTask(
+            case "smelt" -> new SmeltTask(
                     command.commandId,
-                    "smelt",
-                    FailureCode.SMELTING_FAILED,
-                    "P1 skeleton: deterministic furnace timing and inventory transfer are not implemented"
+                    args.get("item").getAsString(),
+                    args.get("count").getAsInt()
             );
             case "place" -> new PlaceTask(
                     command.commandId,
@@ -338,12 +349,7 @@ public final class SkillManager {
             case "equip" -> new EquipTask(command.commandId, args.get("item").getAsString());
             case "use_portal" -> new UsePortalTask(command.commandId, args.get("portal_type").getAsString());
             case "build_portal" -> new BuildPortalTask(command.commandId);
-            case "throw_ender_eye" -> new UnsupportedTask(
-                    command.commandId,
-                    "throw_ender_eye",
-                    hasItem(player, Items.ENDER_EYE) ? FailureCode.INTERNAL_ERROR : FailureCode.NO_ENDER_EYE,
-                    "P1 skeleton: stronghold locate and eye survival tracking are not implemented"
-            );
+            case "throw_ender_eye" -> new ThrowEnderEyeTask(command.commandId);
             case "fight_dragon" -> new FightDragonTask(command.commandId);
             default -> throw invalid("Unknown skill");
         };
@@ -433,6 +439,10 @@ public final class SkillManager {
 
         private static Outcome failure(FailureCode code, String detail) {
             return new Outcome(false, code, detail, null);
+        }
+
+        private static Outcome failure(FailureCode code, String detail, JsonObject data) {
+            return new Outcome(false, code, detail, data);
         }
     }
 
@@ -787,6 +797,425 @@ public final class SkillManager {
         }
     }
 
+    /**
+     * Deterministic furnace workflow. Recipe choice, input allocation, and fuel
+     * allocation are sorted by registry id; the task never chooses resources
+     * based on inferred future value.
+     */
+    private static final class SmeltTask extends BaseTask {
+        private record Load(Item item, int count) {
+        }
+
+        private final String itemId;
+        private final int requestedCount;
+        private final List<Load> inputLoads = new ArrayList<>();
+        private final List<Load> fuelLoads = new ArrayList<>();
+        private final List<BlockPos> workstations = new ArrayList<>();
+        private Item targetItem;
+        private BlockPos furnacePos;
+        private int expectedOutput;
+        private int collectedOutput;
+        private int inputLoadIndex;
+        private int fuelLoadIndex;
+        private int ticks;
+        private int maximumTicks;
+        private int workstationIndex;
+        private boolean prepared;
+        private boolean pathing;
+        private boolean shuffling;
+
+        private SmeltTask(String commandId, String itemId, int requestedCount) {
+            super(commandId, "smelt");
+            this.itemId = itemId;
+            this.requestedCount = requestedCount;
+        }
+
+        @Override
+        public Outcome tick(ServerPlayerEntity player, IPathfinder pathfinder) {
+            if (!prepared) {
+                prepared = true;
+                Outcome preparationFailure = prepare(player);
+                if (preparationFailure != null) {
+                    return preparationFailure;
+                }
+            }
+
+            if (player.getPos().squaredDistanceTo(Vec3d.ofCenter(furnacePos)) > 25.0) {
+                if (!pathing) {
+                    pathfinder.start(player, furnacePos);
+                    pathing = true;
+                }
+                IPathfinder.Status status = pathfinder.tick(player);
+                if (status == IPathfinder.Status.FAILED || status == IPathfinder.Status.IDLE) {
+                    return Outcome.failure(FailureCode.SMELTING_FAILED, "The prepared furnace could not be reached");
+                }
+                return null;
+            }
+            if (pathing) {
+                pathfinder.cancel(player);
+                pathing = false;
+            }
+            if (shuffling) {
+                IPathfinder.Status status = pathfinder.tick(player);
+                if (status == IPathfinder.Status.FAILED
+                        || status == IPathfinder.Status.REACHED
+                        || status == IPathfinder.Status.IDLE) {
+                    pathfinder.cancel(player);
+                    shuffling = false;
+                }
+            } else if (ticks > 0 && ticks % 600 == 0 && workstations.size() > 1) {
+                BlockPos workstation = workstations.get(workstationIndex++ % workstations.size());
+                if (player.getBlockPos().getSquaredDistance(workstation) > 1.0) {
+                    pathfinder.start(player, workstation);
+                    shuffling = true;
+                }
+            }
+
+            if (!(player.getServerWorld().getBlockEntity(furnacePos) instanceof AbstractFurnaceBlockEntity furnace)) {
+                return Outcome.failure(FailureCode.SMELTING_FAILED, "The furnace was removed during smelting");
+            }
+
+            Outcome collectionFailure = collectOutput(player, furnace);
+            if (collectionFailure != null) {
+                return collectionFailure;
+            }
+            if (collectedOutput >= expectedOutput) {
+                furnace.getRecipesUsedAndDropExperience(player.getServerWorld(), player.getPos());
+                return Outcome.success("Smelted and collected " + collectedOutput + " of " + itemId);
+            }
+
+            if (furnace.getStack(0).isEmpty() && inputLoadIndex < inputLoads.size()) {
+                Load load = inputLoads.get(inputLoadIndex++);
+                if (countItem(player, load.item()) < load.count()) {
+                    return Outcome.failure(
+                            FailureCode.SMELTING_FAILED,
+                            "Reserved smelting input disappeared from inventory"
+                    );
+                }
+                removeItems(player, load.item(), load.count());
+                furnace.setStack(0, new ItemStack(load.item(), load.count()));
+            }
+            if (!furnace.getStack(1).isEmpty()
+                    && !AbstractFurnaceBlockEntity.canUseAsFuel(furnace.getStack(1))
+                    && furnace.getStack(1).isOf(Items.BUCKET)) {
+                returnToPlayer(player, furnace.removeStack(1));
+            }
+            if (furnace.getStack(1).isEmpty() && fuelLoadIndex < fuelLoads.size()) {
+                Load load = fuelLoads.get(fuelLoadIndex++);
+                if (countItem(player, load.item()) < load.count()) {
+                    return Outcome.failure(FailureCode.NO_FUEL, "Reserved furnace fuel disappeared from inventory");
+                }
+                removeItems(player, load.item(), load.count());
+                furnace.setStack(1, new ItemStack(load.item(), load.count()));
+            }
+            furnace.markDirty();
+
+            if (furnace.getStack(0).isEmpty()
+                    && inputLoadIndex >= inputLoads.size()
+                    && furnace.getStack(2).isEmpty()
+                    && collectedOutput < expectedOutput) {
+                return Outcome.failure(FailureCode.SMELTING_FAILED, "Furnace stopped before producing the requested output");
+            }
+            if (furnace.getStack(1).isEmpty()
+                    && fuelLoadIndex >= fuelLoads.size()
+                    && !furnace.getStack(0).isEmpty()) {
+                return Outcome.failure(FailureCode.SMELTING_FAILED, "Furnace exhausted the reserved fuel unexpectedly");
+            }
+            if (++ticks > maximumTicks) {
+                return Outcome.failure(FailureCode.SMELTING_FAILED, "Furnace did not complete within its recipe-based timeout");
+            }
+            return null;
+        }
+
+        private Outcome prepare(ServerPlayerEntity player) {
+            Identifier id;
+            try {
+                id = new Identifier(itemId);
+            } catch (RuntimeException e) {
+                return Outcome.failure(FailureCode.INVALID_ARGUMENTS, "Invalid smelting output item id");
+            }
+            if (!Registries.ITEM.containsId(id)) {
+                return Outcome.failure(FailureCode.UNSUPPORTED_ITEM, "Unknown item id " + itemId);
+            }
+            targetItem = Registries.ITEM.get(id);
+
+            List<AbstractCookingRecipe> recipes = new ArrayList<>(
+                    player.server.getRecipeManager().listAllOfType(RecipeType.SMELTING)
+            );
+            recipes.removeIf(recipe ->
+                    !recipe.getOutput(player.getServerWorld().getRegistryManager()).isOf(targetItem));
+            recipes.sort(Comparator.comparing(recipe -> recipe.getId().toString()));
+            if (recipes.isEmpty()) {
+                return Outcome.failure(FailureCode.UNSUPPORTED_ITEM, "No smelting recipe produces " + itemId);
+            }
+
+            furnacePos = findEmptyFurnace(player);
+            if (furnacePos == null) {
+                Outcome placementFailure = placeFurnace(player);
+                if (placementFailure != null) {
+                    return placementFailure;
+                }
+            }
+
+            Map<Item, Integer> reservedInputs = new HashMap<>();
+            int cookTicks = 0;
+            for (AbstractCookingRecipe recipe : recipes) {
+                if (expectedOutput >= requestedCount || recipe.getIngredients().isEmpty()) {
+                    break;
+                }
+                Ingredient ingredient = recipe.getIngredients().get(0);
+                ItemStack recipeOutput = recipe.getOutput(player.getServerWorld().getRegistryManager());
+                if (ingredient.isEmpty() || recipeOutput.isEmpty()) {
+                    continue;
+                }
+                List<Item> matchingItems = player.getInventory().main.stream()
+                        .filter(stack -> !stack.isEmpty() && ingredient.test(stack))
+                        .map(ItemStack::getItem)
+                        .distinct()
+                        .sorted(Comparator.comparing(item -> Registries.ITEM.getId(item).toString()))
+                        .toList();
+                for (Item inputItem : matchingItems) {
+                    int available = countItem(player, inputItem) - reservedInputs.getOrDefault(inputItem, 0);
+                    if (available <= 0) {
+                        continue;
+                    }
+                    int neededInputs = (requestedCount - expectedOutput + recipeOutput.getCount() - 1)
+                            / recipeOutput.getCount();
+                    int allocated = Math.min(available, neededInputs);
+                    appendLoads(inputLoads, inputItem, allocated);
+                    reservedInputs.merge(inputItem, allocated, Integer::sum);
+                    expectedOutput += allocated * recipeOutput.getCount();
+                    cookTicks += allocated * recipe.getCookTime();
+                    if (expectedOutput >= requestedCount) {
+                        break;
+                    }
+                }
+            }
+            if (expectedOutput < requestedCount) {
+                return Outcome.failure(
+                        FailureCode.INSUFFICIENT_MATERIALS,
+                        "Inventory does not contain enough valid raw material for " + itemId
+                );
+            }
+            if (!canFitAfterRemoval(player, targetItem, expectedOutput, reservedInputs)) {
+                return Outcome.failure(FailureCode.INVENTORY_FULL, "Smelted output does not fit in inventory");
+            }
+
+            Map<Item, Integer> fuelTimes = AbstractFurnaceBlockEntity.createFuelTimeMap();
+            List<Item> fuels = player.getInventory().main.stream()
+                    .filter(stack -> !stack.isEmpty()
+                            && fuelTimes.getOrDefault(stack.getItem(), 0) > 0)
+                    .map(ItemStack::getItem)
+                    .distinct()
+                    .sorted(Comparator
+                            .<Item>comparingInt(item -> fuelTimes.getOrDefault(item, 0))
+                            .reversed()
+                            .thenComparing(item -> Registries.ITEM.getId(item).toString()))
+                    .toList();
+            int burnTicksReserved = 0;
+            for (Item fuel : fuels) {
+                int burnPerItem = fuelTimes.getOrDefault(fuel, 0);
+                int available = countItem(player, fuel) - reservedInputs.getOrDefault(fuel, 0);
+                int stillNeeded = cookTicks - burnTicksReserved;
+                if (available <= 0 || stillNeeded <= 0) {
+                    continue;
+                }
+                int allocated = Math.min(available, (stillNeeded + burnPerItem - 1) / burnPerItem);
+                appendLoads(fuelLoads, fuel, allocated);
+                burnTicksReserved += allocated * burnPerItem;
+            }
+            if (burnTicksReserved < cookTicks) {
+                return Outcome.failure(FailureCode.NO_FUEL, "Inventory fuel cannot cover the requested smelting time");
+            }
+
+            workstations.addAll(findFurnaceWorkstations(player, furnacePos));
+            maximumTicks = cookTicks + 20 * 30;
+            return null;
+        }
+
+        private Outcome placeFurnace(ServerPlayerEntity player) {
+            boolean hasFurnace = hasItem(player, Items.FURNACE);
+            if (!hasFurnace && countItem(player, Items.COBBLESTONE) < 8) {
+                return Outcome.failure(
+                        FailureCode.INSUFFICIENT_MATERIALS,
+                        "No furnace is available and eight cobblestone cannot be supplied"
+                );
+            }
+            BlockPos placement = findFurnacePlacement(player);
+            if (placement == null) {
+                return Outcome.failure(FailureCode.SMELTING_FAILED, "No unobstructed furnace placement is reachable");
+            }
+            if (hasFurnace) {
+                removeItems(player, Items.FURNACE, 1);
+            } else {
+                removeItems(player, Items.COBBLESTONE, 8);
+            }
+            if (!player.getServerWorld().setBlockState(
+                    placement,
+                    Blocks.FURNACE.getDefaultState(),
+                    Block.NOTIFY_ALL
+            )) {
+                return Outcome.failure(FailureCode.SMELTING_FAILED, "World rejected furnace placement");
+            }
+            furnacePos = placement;
+            return null;
+        }
+
+        private Outcome collectOutput(ServerPlayerEntity player, AbstractFurnaceBlockEntity furnace) {
+            ItemStack output = furnace.getStack(2);
+            if (output.isEmpty()) {
+                return null;
+            }
+            if (!output.isOf(targetItem)) {
+                return Outcome.failure(FailureCode.SMELTING_FAILED, "Furnace produced an unexpected output item");
+            }
+            int count = output.getCount();
+            ItemStack removed = furnace.removeStack(2);
+            if (!player.getInventory().insertStack(removed) || !removed.isEmpty()) {
+                if (!removed.isEmpty()) {
+                    furnace.setStack(2, removed);
+                }
+                return Outcome.failure(FailureCode.INVENTORY_FULL, "Could not collect furnace output");
+            }
+            collectedOutput += count;
+            return null;
+        }
+
+        @Override
+        public void cancel(ServerPlayerEntity player, IPathfinder pathfinder) {
+            pathfinder.cancel(player);
+            if (furnacePos == null
+                    || !(player.getServerWorld().getBlockEntity(furnacePos) instanceof AbstractFurnaceBlockEntity furnace)) {
+                return;
+            }
+            returnToPlayer(player, furnace.removeStack(0));
+            returnToPlayer(player, furnace.removeStack(1));
+            returnToPlayer(player, furnace.removeStack(2));
+            furnace.markDirty();
+        }
+
+        private static void appendLoads(List<Load> loads, Item item, int count) {
+            int remaining = count;
+            while (remaining > 0) {
+                int load = Math.min(remaining, item.getMaxCount());
+                loads.add(new Load(item, load));
+                remaining -= load;
+            }
+        }
+
+        private static boolean canFitAfterRemoval(
+                ServerPlayerEntity player,
+                Item output,
+                int count,
+                Map<Item, Integer> removals
+        ) {
+            Map<Item, Integer> remainingRemovals = new HashMap<>(removals);
+            int capacity = 0;
+            for (ItemStack stack : player.getInventory().main) {
+                if (stack.isEmpty()) {
+                    capacity += output.getMaxCount();
+                } else {
+                    int removed = Math.min(
+                            stack.getCount(),
+                            remainingRemovals.getOrDefault(stack.getItem(), 0)
+                    );
+                    remainingRemovals.computeIfPresent(stack.getItem(), (item, amount) -> amount - removed);
+                    int remaining = stack.getCount() - removed;
+                    if (remaining == 0) {
+                        capacity += output.getMaxCount();
+                    } else if (stack.isOf(output)) {
+                        capacity += stack.getMaxCount() - remaining;
+                    }
+                }
+                if (capacity >= count) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static BlockPos findEmptyFurnace(ServerPlayerEntity player) {
+            BlockPos center = player.getBlockPos();
+            BlockPos best = null;
+            double bestDistance = Double.MAX_VALUE;
+            for (BlockPos mutable : BlockPos.iterate(center.add(-16, -16, -16), center.add(16, 16, 16))) {
+                if (!player.getServerWorld().isChunkLoaded(mutable)
+                        || !(player.getServerWorld().getBlockEntity(mutable) instanceof AbstractFurnaceBlockEntity furnace)
+                        || !furnace.getStack(0).isEmpty()
+                        || !furnace.getStack(1).isEmpty()
+                        || !furnace.getStack(2).isEmpty()) {
+                    continue;
+                }
+                double distance = mutable.getSquaredDistance(player.getPos());
+                if (distance < bestDistance) {
+                    best = mutable.toImmutable();
+                    bestDistance = distance;
+                }
+            }
+            return best;
+        }
+
+        private static BlockPos findFurnacePlacement(ServerPlayerEntity player) {
+            ServerWorld world = player.getServerWorld();
+            BlockPos center = player.getBlockPos();
+            List<BlockPos> candidates = List.of(
+                    center.add(2, 0, 0),
+                    center.add(-2, 0, 0),
+                    center.add(0, 0, 2),
+                    center.add(0, 0, -2),
+                    center.add(1, 0, 1),
+                    center.add(-1, 0, 1),
+                    center.add(1, 0, -1),
+                    center.add(-1, 0, -1)
+            );
+            for (BlockPos candidate : candidates) {
+                if (world.getBlockState(candidate).isReplaceable()
+                        && world.getBlockState(candidate.down()).isSolidBlock(world, candidate.down())
+                        && world.getWorldBorder().contains(candidate)
+                        && world.canPlayerModifyAt(player, candidate)) {
+                    return candidate;
+                }
+            }
+            return null;
+        }
+
+        private static List<BlockPos> findFurnaceWorkstations(
+                ServerPlayerEntity player,
+                BlockPos furnace
+        ) {
+            ServerWorld world = player.getServerWorld();
+            List<BlockPos> result = new ArrayList<>();
+            for (int dx = -2; dx <= 2; dx++) {
+                for (int dz = -2; dz <= 2; dz++) {
+                    if (dx == 0 && dz == 0) {
+                        continue;
+                    }
+                    BlockPos feet = furnace.add(dx, 0, dz);
+                    if (world.getBlockState(feet.down()).isSolidBlock(world, feet.down())
+                            && world.getBlockState(feet).isReplaceable()
+                            && world.getBlockState(feet.up()).isReplaceable()) {
+                        result.add(feet);
+                    }
+                }
+            }
+            result.sort(Comparator
+                    .comparingDouble((BlockPos pos) -> pos.getSquaredDistance(player.getPos()))
+                    .thenComparingInt(BlockPos::getX)
+                    .thenComparingInt(BlockPos::getZ));
+            return result;
+        }
+
+        private static void returnToPlayer(ServerPlayerEntity player, ItemStack stack) {
+            if (stack.isEmpty()) {
+                return;
+            }
+            player.getInventory().insertStack(stack);
+            if (!stack.isEmpty()) {
+                player.dropItem(stack, false);
+            }
+        }
+    }
+
     private static final class PlaceTask extends BaseTask {
         private final String blockId;
         private final BlockPos offset;
@@ -909,14 +1338,23 @@ public final class SkillManager {
     }
 
     /**
-     * Deterministic combat loop: approach, strike every ten ticks, and flee at
-     * critical health. There is no target-ranking or adaptive strategy.
+     * Deterministic single-target combat loop: resolve, equip the numerically
+     * strongest carried melee weapon, approach, attack on cooldown, and
+     * disengage at the fixed six-health threshold.
      */
     private static final class AttackTask extends BaseTask {
+        private enum Phase {
+            COMBAT,
+            FLEE
+        }
+
         private final String targetType;
         private Entity target;
         private int ticks;
+        private int fleeTicks;
         private boolean pathing;
+        private boolean weaponSelected;
+        private Phase phase = Phase.COMBAT;
 
         private AttackTask(String commandId, String targetType) {
             super(commandId, "attack");
@@ -925,29 +1363,35 @@ public final class SkillManager {
 
         @Override
         public Outcome tick(ServerPlayerEntity player, IPathfinder pathfinder) {
+            if (phase == Phase.FLEE) {
+                return tickFlee(player, pathfinder);
+            }
             if (player.getHealth() <= 6.0F) {
+                phase = Phase.FLEE;
                 pathfinder.cancel(player);
-                if (target != null) {
-                    Vec3d away = player.getPos().subtract(target.getPos()).normalize().multiply(0.45);
-                    player.setVelocity(away.x, player.getVelocity().y, away.z);
-                    player.velocityModified = true;
-                }
-                return Outcome.failure(FailureCode.FLED_FROM_COMBAT, "Deterministic combat safety threshold reached");
+                pathing = false;
+                return tickFlee(player, pathfinder);
             }
             if (target == null) {
                 target = findCombatTarget(player, targetType);
                 if (target == null) {
-                    return Outcome.failure(FailureCode.TARGET_NOT_FOUND, "No matching combat target within 24 blocks");
+                    return Outcome.failure(
+                            FailureCode.TARGET_NOT_FOUND,
+                            "No matching combat target within 32 blocks",
+                            attackData(0)
+                    );
                 }
             }
             if (!target.isAlive()) {
-                JsonObject data = new JsonObject();
-                data.addProperty("kills", 1);
-                return Outcome.success("Combat target defeated", data);
+                return Outcome.success("Combat target defeated", attackData(1));
+            }
+            if (!weaponSelected) {
+                equipBestWeapon(player);
+                weaponSelected = true;
             }
 
             double distance = player.distanceTo(target);
-            if (distance > 3.2) {
+            if (distance > 3.2 || !player.canSee(target)) {
                 if (!pathing || ticks % 20 == 0) {
                     pathfinder.start(player, target.getBlockPos());
                     pathing = true;
@@ -959,7 +1403,7 @@ public final class SkillManager {
             } else {
                 pathfinder.cancel(player);
                 pathing = false;
-                if (ticks % 10 == 0) {
+                if (player.getAttackCooldownProgress(0.5F) >= 0.9F) {
                     player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, target.getEyePos());
                     player.attack(target);
                     player.swingHand(Hand.MAIN_HAND);
@@ -967,7 +1411,40 @@ public final class SkillManager {
             }
             ticks++;
             if (ticks > 20 * 90) {
-                return Outcome.failure(FailureCode.TARGET_UNREACHABLE, "Combat script exceeded 90 seconds");
+                return Outcome.failure(
+                        FailureCode.TARGET_UNREACHABLE,
+                        "Combat script exceeded 90 seconds",
+                        attackData(0)
+                );
+            }
+            return null;
+        }
+
+        private Outcome tickFlee(ServerPlayerEntity player, IPathfinder pathfinder) {
+            Vec3d away = target == null
+                    ? player.getRotationVector().multiply(-1.0)
+                    : player.getPos().subtract(target.getPos());
+            if (away.horizontalLengthSquared() < 0.0001) {
+                away = new Vec3d(1.0, 0.0, 0.0);
+            }
+            Vec3d horizontal = new Vec3d(away.x, 0.0, away.z).normalize();
+            if (!pathing) {
+                BlockPos escape = BlockPos.ofFloored(player.getPos().add(horizontal.multiply(10.0)));
+                pathfinder.start(player, escape);
+                pathing = true;
+            }
+            IPathfinder.Status status = pathfinder.tick(player);
+            if (status == IPathfinder.Status.FAILED || status == IPathfinder.Status.IDLE) {
+                player.setVelocity(horizontal.x * 0.35, player.getVelocity().y, horizontal.z * 0.35);
+                player.velocityModified = true;
+            }
+            fleeTicks++;
+            if ((target != null && player.distanceTo(target) >= 10.0) || fleeTicks >= 40) {
+                return Outcome.failure(
+                        FailureCode.FLED_FROM_COMBAT,
+                        "Disengaged after reaching the fixed critical-health threshold",
+                        attackData(0)
+                );
             }
             return null;
         }
@@ -982,6 +1459,7 @@ public final class SkillManager {
         private BlockPos portal;
         private net.minecraft.registry.RegistryKey<World> startingDimension;
         private boolean started;
+        private boolean entered;
         private int ticks;
 
         private UsePortalTask(String commandId, String portalType) {
@@ -994,44 +1472,69 @@ public final class SkillManager {
             if (!started) {
                 started = true;
                 startingDimension = player.getWorld().getRegistryKey();
-                if (portalType.equals("end")) {
+                Block portalBlock = portalType.equals("nether") ? Blocks.NETHER_PORTAL : Blocks.END_PORTAL;
+                portal = findNearestBlock(player, 16, state -> state.isOf(portalBlock));
+                if (portal == null && portalType.equals("end")) {
                     Outcome activationFailure = activateEndFrames(player);
                     if (activationFailure != null) {
                         return activationFailure;
                     }
+                    portal = findNearestBlock(player, 16, state -> state.isOf(Blocks.END_PORTAL));
                 }
-                Block portalBlock = portalType.equals("nether") ? Blocks.NETHER_PORTAL : Blocks.END_PORTAL;
-                portal = findNearestBlock(player, 16, state -> state.isOf(portalBlock));
                 if (portal == null) {
                     return Outcome.failure(FailureCode.PORTAL_NOT_FOUND, "No usable " + portalType + " portal within 16 blocks");
                 }
                 pathfinder.start(player, portal);
             }
 
-            if (player.getWorld().getRegistryKey() != startingDimension) {
+            if (!player.getWorld().getRegistryKey().equals(startingDimension)) {
                 return Outcome.success("Traversed " + portalType + " portal");
             }
             if (++ticks > 20 * 20) {
                 return Outcome.failure(FailureCode.PORTAL_NOT_FOUND, "Portal traversal did not change dimension");
             }
-            IPathfinder.Status status = pathfinder.tick(player);
-            if (status == IPathfinder.Status.FAILED) {
-                return Outcome.failure(FailureCode.TARGET_UNREACHABLE, "Portal could not be reached");
+
+            if (!entered) {
+                if (player.getPos().squaredDistanceTo(Vec3d.ofCenter(portal)) > 9.0) {
+                    IPathfinder.Status status = pathfinder.tick(player);
+                    if (status == IPathfinder.Status.FAILED || status == IPathfinder.Status.IDLE) {
+                        return Outcome.failure(FailureCode.TARGET_UNREACHABLE, "Portal could not be reached");
+                    }
+                    return null;
+                }
+                pathfinder.cancel(player);
+                player.requestTeleport(portal.getX() + 0.5, portal.getY() + 0.1, portal.getZ() + 0.5);
+                player.setVelocity(Vec3d.ZERO);
+                entered = true;
+            } else if (ticks % 20 == 0
+                    && player.getServerWorld().getBlockState(player.getBlockPos()).getBlock()
+                    != (portalType.equals("nether") ? Blocks.NETHER_PORTAL : Blocks.END_PORTAL)) {
+                // Nether portals require a fixed dwell time; keep the player
+                // inside the already-selected portal without re-planning.
+                player.requestTeleport(portal.getX() + 0.5, portal.getY() + 0.1, portal.getZ() + 0.5);
             }
             return null;
         }
 
         private static Outcome activateEndFrames(ServerPlayerEntity player) {
             List<BlockPos> emptyFrames = new ArrayList<>();
+            List<BlockPos> allFrames = new ArrayList<>();
             BlockPos center = player.getBlockPos();
             for (BlockPos mutable : BlockPos.iterate(
-                    center.add(-8, -4, -8),
-                    center.add(8, 4, 8)
+                    center.add(-16, -16, -16),
+                    center.add(16, 16, 16)
             )) {
                 BlockState state = player.getServerWorld().getBlockState(mutable);
-                if (state.isOf(Blocks.END_PORTAL_FRAME) && !state.get(EndPortalFrameBlock.EYE)) {
-                    emptyFrames.add(mutable.toImmutable());
+                if (state.isOf(Blocks.END_PORTAL_FRAME)) {
+                    BlockPos frame = mutable.toImmutable();
+                    allFrames.add(frame);
+                    if (!state.get(EndPortalFrameBlock.EYE)) {
+                        emptyFrames.add(frame);
+                    }
                 }
+            }
+            if (allFrames.isEmpty()) {
+                return Outcome.failure(FailureCode.PORTAL_NOT_FOUND, "No end portal frames exist within 16 blocks");
             }
             emptyFrames.sort(Comparator
                     .comparingInt(BlockPos::getY)
@@ -1050,13 +1553,35 @@ public final class SkillManager {
                         Block.NOTIFY_ALL
                 );
             }
+            BlockPattern.Result completed = null;
+            for (BlockPos frame : allFrames) {
+                completed = EndPortalFrameBlock.getCompletedFramePattern()
+                        .searchAround(player.getServerWorld(), frame);
+                if (completed != null) {
+                    break;
+                }
+            }
+            if (completed == null) {
+                return Outcome.failure(FailureCode.PORTAL_NOT_FOUND, "Nearby frames do not form a completed end portal");
+            }
+            BlockPos interiorOrigin = completed.getFrontTopLeft().add(-3, 0, -3);
+            for (int x = 0; x < 3; x++) {
+                for (int z = 0; z < 3; z++) {
+                    player.getServerWorld().setBlockState(
+                            interiorOrigin.add(x, 0, z),
+                            Blocks.END_PORTAL.getDefaultState(),
+                            Block.NOTIFY_ALL
+                    );
+                }
+            }
             return null;
         }
     }
 
     /**
-     * Fixed 10-obsidian, cornerless 4x5 frame in the X/Y plane. It validates
-     * every target first, consumes exact materials, then ignites the interior.
+     * Fixed cornerless 4x5 portal script. It uses ten carried obsidian first;
+     * otherwise it deterministically casts the same ten positions from still
+     * lava sources/lava buckets plus a reusable water bucket.
      */
     private static final class BuildPortalTask extends BaseTask {
         private BlockPos origin;
@@ -1070,10 +1595,10 @@ public final class SkillManager {
         @Override
         public Outcome tick(ServerPlayerEntity player, IPathfinder pathfinder) {
             if (!built) {
-                if (countItem(player, Items.OBSIDIAN) < 10 || !hasItem(player, Items.FLINT_AND_STEEL)) {
+                if (!hasItem(player, Items.FLINT_AND_STEEL)) {
                     return Outcome.failure(
                             FailureCode.INSUFFICIENT_MATERIALS,
-                            "Portal script requires 10 obsidian and flint_and_steel"
+                            "Portal construction requires flint_and_steel"
                     );
                 }
                 origin = player.getBlockPos().add(2, 0, 0);
@@ -1090,9 +1615,20 @@ public final class SkillManager {
                     }
                 }
 
-                removeItems(player, Items.OBSIDIAN, 10);
-                for (BlockPos pos : frame) {
-                    player.getServerWorld().setBlockState(pos, Blocks.OBSIDIAN.getDefaultState(), Block.NOTIFY_ALL);
+                if (countItem(player, Items.OBSIDIAN) >= 10) {
+                    removeItems(player, Items.OBSIDIAN, 10);
+                    for (BlockPos pos : frame) {
+                        player.getServerWorld().setBlockState(
+                                pos,
+                                Blocks.OBSIDIAN.getDefaultState(),
+                                Block.NOTIFY_ALL
+                        );
+                    }
+                } else {
+                    Outcome castingFailure = castFrameWithBuckets(player, frame);
+                    if (castingFailure != null) {
+                        return castingFailure;
+                    }
                 }
                 BlockPos ignition = origin.add(1, 1, 0);
                 player.getServerWorld().setBlockState(
@@ -1109,6 +1645,78 @@ public final class SkillManager {
             }
             if (++ticks > 40) {
                 return Outcome.failure(FailureCode.PORTAL_BUILD_FAILED, "Frame did not form a nether portal");
+            }
+            return null;
+        }
+
+        private static Outcome castFrameWithBuckets(ServerPlayerEntity player, List<BlockPos> frame) {
+            if (!hasItem(player, Items.WATER_BUCKET)) {
+                return Outcome.failure(
+                        FailureCode.INSUFFICIENT_MATERIALS,
+                        "Bucket casting requires a water_bucket"
+                );
+            }
+            ServerWorld world = player.getServerWorld();
+            List<BlockPos> lavaSources = new ArrayList<>();
+            BlockPos center = player.getBlockPos();
+            for (BlockPos mutable : BlockPos.iterate(
+                    center.add(-16, -16, -16),
+                    center.add(16, 16, 16)
+            )) {
+                BlockState state = world.getBlockState(mutable);
+                if (state.isOf(Blocks.LAVA) && state.getFluidState().isStill()) {
+                    lavaSources.add(mutable.toImmutable());
+                }
+            }
+            lavaSources.sort(Comparator
+                    .comparingDouble((BlockPos pos) -> pos.getSquaredDistance(player.getPos()))
+                    .thenComparingInt(BlockPos::getY)
+                    .thenComparingInt(BlockPos::getX)
+                    .thenComparingInt(BlockPos::getZ));
+            int lavaBuckets = countItem(player, Items.LAVA_BUCKET);
+            if (lavaBuckets + lavaSources.size() < frame.size()) {
+                return Outcome.failure(
+                        FailureCode.INSUFFICIENT_MATERIALS,
+                        "Bucket casting requires ten lava sources or lava buckets within 16 blocks"
+                );
+            }
+
+            // This atomic server-side sequence is the deterministic equivalent
+            // of repeatedly placing water, collecting a source, and casting one
+            // frame block. It deliberately performs no terrain/resource choice.
+            BlockPos castingWater = frame.get(0).add(0, 1, 0);
+            if (!world.setBlockState(castingWater, Blocks.WATER.getDefaultState(), Block.NOTIFY_ALL)) {
+                return Outcome.failure(FailureCode.PORTAL_BUILD_FAILED, "Could not place casting water");
+            }
+            int sourceIndex = 0;
+            for (BlockPos framePos : frame) {
+                if (lavaBuckets > 0) {
+                    removeItems(player, Items.LAVA_BUCKET, 1);
+                    ItemStack bucket = new ItemStack(Items.BUCKET);
+                    player.getInventory().insertStack(bucket);
+                    if (!bucket.isEmpty()) {
+                        player.dropItem(bucket, false);
+                    }
+                    lavaBuckets--;
+                } else {
+                    BlockPos source = lavaSources.get(sourceIndex++);
+                    if (!world.getBlockState(source).isOf(Blocks.LAVA)
+                            || !world.getBlockState(source).getFluidState().isStill()) {
+                        world.setBlockState(castingWater, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                        return Outcome.failure(
+                                FailureCode.PORTAL_BUILD_FAILED,
+                                "A reserved lava source changed during bucket casting"
+                        );
+                    }
+                    world.setBlockState(source, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                }
+                if (!world.setBlockState(framePos, Blocks.OBSIDIAN.getDefaultState(), Block.NOTIFY_ALL)) {
+                    world.setBlockState(castingWater, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
+                    return Outcome.failure(FailureCode.PORTAL_BUILD_FAILED, "A cast frame block was rejected");
+                }
+            }
+            if (world.getBlockState(castingWater).isOf(Blocks.WATER)) {
+                world.setBlockState(castingWater, Blocks.AIR.getDefaultState(), Block.NOTIFY_ALL);
             }
             return null;
         }
@@ -1138,9 +1746,114 @@ public final class SkillManager {
     }
 
     /**
-     * Fixed dragon procedure required by the specification:
-     * phase 1 destroys every loaded end crystal; phase 2 attacks the dragon.
-     * Tower climbing/ranged crystal handling remains a documented P1 TODO.
+     * Throws a real eye entity toward the server-located stronghold, samples
+     * its actual flight vector, then observes whether a new eye item drops.
+     */
+    private static final class ThrowEnderEyeTask extends BaseTask {
+        private EyeOfEnderEntity eye;
+        private Vec3d launchPosition;
+        private Vec3d lastEyePosition;
+        private Vec3d direction;
+        private Vec3d fallbackDirection;
+        private Set<UUID> existingEyeDrops;
+        private int ticks;
+        private int ticksAfterRemoval;
+        private boolean launched;
+
+        private ThrowEnderEyeTask(String commandId) {
+            super(commandId, "throw_ender_eye");
+        }
+
+        @Override
+        public Outcome tick(ServerPlayerEntity player, IPathfinder pathfinder) {
+            if (!launched) {
+                launched = true;
+                if (!hasItem(player, Items.ENDER_EYE)) {
+                    return Outcome.failure(FailureCode.NO_ENDER_EYE, "No ender eye is available to throw");
+                }
+                ServerWorld world = player.getServerWorld();
+                BlockPos stronghold = world.locateStructure(
+                        StructureTags.EYE_OF_ENDER_LOCATED,
+                        player.getBlockPos(),
+                        100,
+                        false
+                );
+                if (stronghold == null) {
+                    return Outcome.failure(FailureCode.TARGET_NOT_FOUND, "No eye-locatable stronghold was found");
+                }
+
+                existingEyeDrops = new HashSet<>();
+                for (ItemEntity itemEntity : world.getEntitiesByClass(
+                        ItemEntity.class,
+                        player.getBoundingBox().expand(192.0),
+                        entity -> entity.getStack().isOf(Items.ENDER_EYE)
+                )) {
+                    existingEyeDrops.add(itemEntity.getUuid());
+                }
+                launchPosition = new Vec3d(player.getX(), player.getEyeY() - 0.5, player.getZ());
+                lastEyePosition = launchPosition;
+                fallbackDirection = Vec3d.ofCenter(stronghold).subtract(launchPosition).normalize();
+                eye = new EyeOfEnderEntity(world, launchPosition.x, launchPosition.y, launchPosition.z);
+                eye.setItem(new ItemStack(Items.ENDER_EYE));
+                eye.initTargetPos(stronghold);
+                if (!world.spawnEntity(eye)) {
+                    return Outcome.failure(FailureCode.INTERNAL_ERROR, "Server rejected the ender eye entity");
+                }
+                removeItems(player, Items.ENDER_EYE, 1);
+                player.swingHand(Hand.MAIN_HAND);
+                world.syncWorldEvent(
+                        null,
+                        WorldEvents.EYE_OF_ENDER_LAUNCHES,
+                        player.getBlockPos(),
+                        0
+                );
+            }
+
+            if (!eye.isRemoved()) {
+                lastEyePosition = eye.getPos();
+                Vec3d displacement = lastEyePosition.subtract(launchPosition);
+                if (direction == null && displacement.lengthSquared() > 0.0001) {
+                    direction = displacement.normalize();
+                }
+            } else if (++ticksAfterRemoval >= 5) {
+                if (direction == null) {
+                    Vec3d velocity = eye.getVelocity();
+                    direction = velocity.lengthSquared() > 0.0001 ? velocity.normalize() : fallbackDirection;
+                }
+                boolean survived = player.getServerWorld().getEntitiesByClass(
+                                ItemEntity.class,
+                                new Box(lastEyePosition, lastEyePosition).expand(8.0),
+                                entity -> entity.getStack().isOf(Items.ENDER_EYE)
+                                        && !existingEyeDrops.contains(entity.getUuid())
+                        )
+                        .stream()
+                        .findAny()
+                        .isPresent();
+                return Outcome.success("Ender eye flight completed", eyeData(direction, survived));
+            }
+
+            if (++ticks > 20 * 10) {
+                return Outcome.failure(FailureCode.INTERNAL_ERROR, "Ender eye did not finish its flight within ten seconds");
+            }
+            return null;
+        }
+
+        private static JsonObject eyeData(Vec3d direction, boolean survived) {
+            JsonObject vector = new JsonObject();
+            vector.addProperty("x", direction.x);
+            vector.addProperty("y", direction.y);
+            vector.addProperty("z", direction.z);
+            JsonObject data = new JsonObject();
+            data.add("direction", vector);
+            data.addProperty("eye_survived", survived);
+            return data;
+        }
+    }
+
+    /**
+     * Fixed dragon procedure required by the specification. It always clears
+     * crystals first (bow when visible, melee approach otherwise), then follows
+     * four fixed dodge waypoints until a perch phase permits melee attacks.
      */
     private static final class FightDragonTask extends BaseTask {
         private enum Phase {
@@ -1149,9 +1862,13 @@ public final class SkillManager {
         }
 
         private Phase phase = Phase.CRYSTALS;
-        private Entity target;
+        private EndCrystalEntity crystal;
+        private EnderDragonEntity dragon;
         private int ticks;
+        private int nextDodgeTick;
+        private int dodgeIndex;
         private boolean pathing;
+        private boolean weaponSelected;
 
         private FightDragonTask(String commandId) {
             super(commandId, "fight_dragon");
@@ -1159,75 +1876,237 @@ public final class SkillManager {
 
         @Override
         public Outcome tick(ServerPlayerEntity player, IPathfinder pathfinder) {
-            if (player.getWorld().getRegistryKey() != World.END) {
+            if (!player.getWorld().getRegistryKey().equals(World.END)) {
                 return Outcome.failure(FailureCode.DRAGON_FIGHT_ABORTED, "fight_dragon requires the end dimension");
+            }
+            if (player.isDead() || player.getHealth() <= 0.0F) {
+                return Outcome.failure(FailureCode.AGENT_DIED, "Agent died during the dragon fight");
             }
             if (player.getHealth() <= 6.0F) {
                 return Outcome.failure(FailureCode.DRAGON_FIGHT_ABORTED, "Dragon script aborted at critical health");
             }
-
-            if (target == null || !target.isAlive()) {
-                target = null;
-                pathing = false;
-                if (phase == Phase.CRYSTALS) {
-                    List<EndCrystalEntity> crystals = player.getServerWorld().getEntitiesByClass(
-                            EndCrystalEntity.class,
-                            player.getBoundingBox().expand(160.0),
-                            Entity::isAlive
-                    );
-                    crystals.sort(Comparator.comparingDouble(player::squaredDistanceTo));
-                    if (!crystals.isEmpty()) {
-                        target = crystals.get(0);
-                    } else {
-                        phase = Phase.DRAGON;
-                    }
-                }
-                if (phase == Phase.DRAGON && target == null) {
-                    List<EnderDragonEntity> dragons = player.getServerWorld().getEntitiesByClass(
-                            EnderDragonEntity.class,
-                            player.getBoundingBox().expand(256.0),
-                            Entity::isAlive
-                    );
-                    if (dragons.isEmpty()) {
-                        return Outcome.success("No living dragon remains after crystal phase");
-                    }
-                    target = dragons.get(0);
-                }
+            if (++ticks > 20 * 600) {
+                return Outcome.failure(FailureCode.DRAGON_FIGHT_ABORTED, "Dragon script exceeded ten minutes");
             }
 
-            double reach = phase == Phase.CRYSTALS ? 4.5 : 5.0;
-            if (player.distanceTo(target) <= reach) {
+            if (phase == Phase.CRYSTALS) {
+                Outcome crystalOutcome = tickCrystals(player, pathfinder);
+                if (crystalOutcome != null || phase == Phase.CRYSTALS) {
+                    return crystalOutcome;
+                }
+            }
+            return tickDragon(player, pathfinder);
+        }
+
+        private Outcome tickCrystals(ServerPlayerEntity player, IPathfinder pathfinder) {
+            if (crystal == null || !crystal.isAlive()) {
+                crystal = null;
                 pathfinder.cancel(player);
                 pathing = false;
-                if (ticks % 10 == 0) {
-                    player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, target.getEyePos());
-                    player.attack(target);
-                    player.swingHand(Hand.MAIN_HAND);
+                List<EndCrystalEntity> crystals = player.getServerWorld().getEntitiesByClass(
+                        EndCrystalEntity.class,
+                        player.getBoundingBox().expand(192.0),
+                        Entity::isAlive
+                );
+                crystals.sort(Comparator
+                        .comparingDouble((EndCrystalEntity entity) -> player.squaredDistanceTo(entity))
+                        .thenComparingInt(Entity::getId));
+                if (crystals.isEmpty()) {
+                    phase = Phase.DRAGON;
+                    weaponSelected = false;
+                    return null;
                 }
-            } else {
-                if (!pathing || ticks % 20 == 0) {
-                    pathfinder.start(player, target.getBlockPos());
-                    pathing = true;
-                }
-                IPathfinder.Status status = pathfinder.tick(player);
-                if (status == IPathfinder.Status.FAILED) {
+                crystal = crystals.get(0);
+            }
+
+            double distance = player.distanceTo(crystal);
+            if (distance > 4.5
+                    && hasItem(player, Items.BOW)
+                    && hasItem(player, Items.ARROW)
+                    && player.canSee(crystal)) {
+                pathfinder.cancel(player);
+                pathing = false;
+                if (ticks % 15 == 0 && !shootArrow(player, crystal)) {
                     return Outcome.failure(
                             FailureCode.DRAGON_FIGHT_ABORTED,
-                            phase == Phase.CRYSTALS
-                                    ? "P1 TODO: elevated crystal requires deterministic ranged/tower routine"
-                                    : "Dragon could not be reached during attack phase"
+                            "Server rejected a deterministic crystal arrow"
                     );
                 }
+                return null;
             }
-            if (++ticks > 20 * 300) {
-                return Outcome.failure(FailureCode.DRAGON_FIGHT_ABORTED, "Dragon script exceeded five minutes");
+
+            if (distance <= 4.5 && player.canSee(crystal)) {
+                pathfinder.cancel(player);
+                pathing = false;
+                if (!weaponSelected) {
+                    equipBestWeapon(player);
+                    weaponSelected = true;
+                }
+                if (player.getAttackCooldownProgress(0.5F) >= 0.9F) {
+                    player.lookAt(
+                            net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,
+                            crystal.getEyePos()
+                    );
+                    player.attack(crystal);
+                    player.swingHand(Hand.MAIN_HAND);
+                }
+                return null;
+            }
+
+            if (!pathing || ticks % 20 == 0) {
+                pathfinder.start(player, crystal.getBlockPos());
+                pathing = true;
+            }
+            IPathfinder.Status status = pathfinder.tick(player);
+            if (status == IPathfinder.Status.FAILED || status == IPathfinder.Status.IDLE) {
+                return Outcome.failure(
+                        FailureCode.DRAGON_FIGHT_ABORTED,
+                        "A crystal without a usable bow line could not be reached for melee"
+                );
             }
             return null;
+        }
+
+        private Outcome tickDragon(ServerPlayerEntity player, IPathfinder pathfinder) {
+            if (dragon == null || !dragon.isAlive()) {
+                List<EnderDragonEntity> dragons = player.getServerWorld().getEntitiesByClass(
+                        EnderDragonEntity.class,
+                        player.getBoundingBox().expand(256.0),
+                        Entity::isAlive
+                );
+                if (dragons.isEmpty()) {
+                    return Outcome.success("End crystals destroyed and Ender Dragon defeated");
+                }
+                dragons.sort(Comparator.comparingInt(Entity::getId));
+                dragon = dragons.get(0);
+            }
+
+            PhaseType<?> currentPhase = dragon.getPhaseManager().getCurrent().getType();
+            boolean perched = currentPhase == PhaseType.LANDING
+                    || currentPhase == PhaseType.SITTING_FLAMING
+                    || currentPhase == PhaseType.SITTING_SCANNING
+                    || currentPhase == PhaseType.SITTING_ATTACKING;
+            if (!perched) {
+                weaponSelected = false;
+                return tickDodge(player, pathfinder);
+            }
+
+            if (!weaponSelected) {
+                equipBestWeapon(player);
+                weaponSelected = true;
+            }
+            Entity head = dragon.head;
+            if (player.distanceTo(head) <= 6.0 && player.canSee(head)) {
+                pathfinder.cancel(player);
+                pathing = false;
+                if (player.getAttackCooldownProgress(0.5F) >= 0.9F) {
+                    player.lookAt(
+                            net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,
+                            head.getEyePos()
+                    );
+                    player.attack(head);
+                    player.swingHand(Hand.MAIN_HAND);
+                }
+                return null;
+            }
+
+            if (!pathing || ticks % 20 == 0) {
+                pathfinder.start(player, head.getBlockPos());
+                pathing = true;
+            }
+            IPathfinder.Status status = pathfinder.tick(player);
+            if (status == IPathfinder.Status.FAILED || status == IPathfinder.Status.IDLE) {
+                return Outcome.failure(
+                        FailureCode.DRAGON_FIGHT_ABORTED,
+                        "The perched dragon could not be reached"
+                );
+            }
+            return null;
+        }
+
+        private Outcome tickDodge(ServerPlayerEntity player, IPathfinder pathfinder) {
+            if (pathing) {
+                IPathfinder.Status status = pathfinder.tick(player);
+                if (status == IPathfinder.Status.FAILED
+                        || status == IPathfinder.Status.REACHED
+                        || status == IPathfinder.Status.IDLE) {
+                    pathfinder.cancel(player);
+                    pathing = false;
+                    nextDodgeTick = ticks + 20;
+                }
+            }
+            if (!pathing && ticks >= nextDodgeTick) {
+                BlockPos waypoint = dodgeWaypoint(player, dragon, dodgeIndex++);
+                pathfinder.start(player, waypoint);
+                pathing = true;
+            }
+            return null;
+        }
+
+        private static boolean shootArrow(ServerPlayerEntity player, EndCrystalEntity target) {
+            int bowSlot = findItemSlot(player, Items.BOW);
+            int arrowSlot = findItemSlot(player, Items.ARROW);
+            if (bowSlot < 0 || arrowSlot < 0) {
+                return false;
+            }
+            moveToMainHand(player, bowSlot);
+            ArrowEntity arrow = new ArrowEntity(player.getServerWorld(), player);
+            double distance = arrow.getPos().distanceTo(target.getPos());
+            Vec3d aim = target.getPos()
+                    .add(0.0, 0.5 + Math.min(12.0, distance * distance / 360.0), 0.0)
+                    .subtract(arrow.getPos())
+                    .normalize();
+            arrow.setVelocity(aim.x, aim.y, aim.z, 3.0F, 0.0F);
+            arrow.setDamage(4.0);
+            if (!player.getServerWorld().spawnEntity(arrow)) {
+                arrow.discard();
+                return false;
+            }
+            removeItems(player, Items.ARROW, 1);
+            player.getMainHandStack().damage(1, player, entity -> entity.sendToolBreakStatus(Hand.MAIN_HAND));
+            player.lookAt(
+                    net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,
+                    target.getEyePos()
+            );
+            player.swingHand(Hand.MAIN_HAND);
+            return true;
+        }
+
+        private static BlockPos dodgeWaypoint(
+                ServerPlayerEntity player,
+                EnderDragonEntity dragon,
+                int index
+        ) {
+            int[][] offsets = {
+                    {12, 0},
+                    {0, 12},
+                    {-12, 0},
+                    {0, -12}
+            };
+            BlockPos origin = dragon.getFightOrigin();
+            if (origin == null) {
+                origin = player.getBlockPos();
+            }
+            int[] offset = offsets[Math.floorMod(index, offsets.length)];
+            int x = origin.getX() + offset[0];
+            int z = origin.getZ() + offset[1];
+            ServerWorld world = player.getServerWorld();
+            int top = Math.min(world.getTopY() - 2, player.getBlockY() + 8);
+            int bottom = Math.max(world.getBottomY() + 1, player.getBlockY() - 16);
+            for (int y = top; y >= bottom; y--) {
+                BlockPos feet = new BlockPos(x, y, z);
+                if (world.getBlockState(feet.down()).isSolidBlock(world, feet.down())
+                        && world.getBlockState(feet).isReplaceable()
+                        && world.getBlockState(feet.up()).isReplaceable()) {
+                    return feet;
+                }
+            }
+            return player.getBlockPos();
         }
     }
 
     private static Entity findCombatTarget(ServerPlayerEntity player, String targetType) {
-        Box box = player.getBoundingBox().expand(24.0);
+        Box box = player.getBoundingBox().expand(32.0);
         Predicate<Entity> predicate;
         if (targetType.equals("nearest_hostile")) {
             predicate = entity -> entity instanceof HostileEntity && entity.isAlive();
@@ -1239,6 +2118,36 @@ public final class SkillManager {
                 .stream()
                 .min(Comparator.comparingDouble(player::squaredDistanceTo))
                 .orElse(null);
+    }
+
+    private static JsonObject attackData(int kills) {
+        JsonObject data = new JsonObject();
+        data.addProperty("kills", kills);
+        return data;
+    }
+
+    private static void equipBestWeapon(ServerPlayerEntity player) {
+        int bestSlot = -1;
+        double bestDamage = 0.0;
+        for (int slot = 0; slot < player.getInventory().main.size(); slot++) {
+            ItemStack stack = player.getInventory().main.get(slot);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            double damage = stack.getAttributeModifiers(EquipmentSlot.MAINHAND)
+                    .get(EntityAttributes.GENERIC_ATTACK_DAMAGE)
+                    .stream()
+                    .filter(modifier -> modifier.getOperation() == EntityAttributeModifier.Operation.ADDITION)
+                    .mapToDouble(EntityAttributeModifier::getValue)
+                    .sum();
+            if (damage > bestDamage) {
+                bestDamage = damage;
+                bestSlot = slot;
+            }
+        }
+        if (bestSlot >= 0) {
+            moveToMainHand(player, bestSlot);
+        }
     }
 
     private static BlockPos findNearestBlock(

@@ -89,32 +89,28 @@ with direct typed API calls and make Automatone the default runtime dependency.
 
 ## Skill coverage
 
-Fully implemented for P1:
+All 12 schema-registered skills have deterministic executors:
 
 - `goto`: pathfinder movement to an explicit `BlockPos`
 - `mine`: incremental radius-24 target search, approach, tool selection, break,
   repeat, and `data.mined_count`
 - `craft`: deterministic recipe selection, ingredient reservation/consumption,
   2×2 versus crafting-table check, capacity check, and output insertion
+- `smelt`: recipe-based raw-material allocation, empty-furnace discovery or
+  furnace crafting/placement, fuel planning, vanilla processing, and collection
 - `place`: validated relative placement with inventory consumption
+- `attack`: entity-id or nearest-hostile resolution, approach, strongest carried
+  weapon selection, cooldown attacks, kill count, and critical-health disengagement
 - `eat`: deterministic first-edible inventory scan and vanilla food consumption
 - `equip`: armor-slot equip or main-hand selection/swap
-
-Deterministic P1 scripts with documented limitations:
-
-- `attack`: nearest matching target, approach, fixed-rate melee, and critical-HP
-  flee; TODO: ranged combat and shield use
-- `use_portal`: nearby portal search/traversal; for End portals it fills nearby
-  frames in coordinate order first; TODO: remote portal approach
-- `build_portal`: fixed cornerless 10-obsidian frame and ignition; TODO: bucket
-  method and terrain preparation
-- `fight_dragon`: mandatory crystal phase followed by dragon melee phase; TODO:
-  deterministic tower/ranged crystal destruction, perch waiting, and healing
-
-Schema-registered P1 skeletons that fail immediately with an allowed code:
-
-- `smelt` → `SMELTING_FAILED`
-- `throw_ender_eye` → `NO_ENDER_EYE` when absent, otherwise `INTERNAL_ERROR`
+- `use_portal`: radius-16 portal lookup, deterministic End-frame activation,
+  portal entry/dwell, and dimension-change confirmation
+- `build_portal`: fixed ten-obsidian frame or deterministic water-and-lava
+  bucket casting, followed by flint-and-steel ignition
+- `throw_ender_eye`: real eye flight, sampled unit direction, and dropped-eye
+  survival detection
+- `fight_dragon`: crystals first (visible ranged shots, otherwise melee
+  approach), fixed airborne dodge waypoints, then perched-dragon melee
 
 Every accepted command terminates in a schema-shaped `skill_result`. A newer
 valid command aborts the old command with `INTERRUPTED_BY_NEW_COMMAND`. No
