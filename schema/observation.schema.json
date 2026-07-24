@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "observation.schema.json",
+  "title": "Observation",
+  "description": "Mod → ブリッジ。要約済み観測(仕様書§5)。生ブロックデータは送らない。記憶座標(拠点・要塞等)はブリッジ側が保持するため本メッセージには含まない(ADR-0001)。",
+  "type": "object",
+  "allOf": [{ "$ref": "common.schema.json#/$defs/MessageEnvelope" }],
+  "properties": {
+    "message_type": { "const": "observation" },
+    "reason": {
+      "type": "string",
+      "description": "送信契機",
+      "enum": ["skill_finished", "periodic", "interrupt", "reconnected"]
+    },
+    "self": {
+      "type": "object",
+      "properties": {
+        "hp": { "type": "number", "minimum": 0, "maximum": 20 },
+        "food": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "pos": { "$ref": "common.schema.json#/$defs/Vec3" },
+        "yaw": { "type": "number" },
+        "pitch": { "type": "number" },
+        "dimension": { "$ref": "common.schema.json#/$defs/Dimension" },
+        "game_time": {
+          "type": "integer",
+          "description": "ワールド累計tick"
+        },
+        "time_of_day": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23999,
+          "description": "ゲーム内時刻(0=朝)"
+        }
+      },
+      "required": ["hp", "food", "pos", "yaw", "pitch", "dimension", "game_time", "time_of_day"],
+      "additionalProperties": false
+    },
+    "inventory": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/ItemStack" },
+          "description": "同一idは合算した一覧"
+        },
+        "empty_slots": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["items", "empty_slots"],
+      "additionalProperties": false
+    },
+    "equipment": {
+      "type": "object",
+      "properties": {
+        "main_hand": { "type": ["string", "null"], "description": "アイテムid、素手ならnull" },
+        "off_hand": { "type": ["string", "null"] },
+        "helmet": { "type": ["string", "null"] },
+        "chestplate": { "type": ["string", "null"] },
+        "leggings": { "type": ["string", "null"] },
+        "boots": { "type": ["string", "null"] }
+      },
+      "required": ["main_hand", "off_hand", "helmet", "chestplate", "leggings", "boots"],
+      "additionalProperties": false
+    },
+    "nearby": {
+      "type": "object",
+      "description": "半径16ブロック内の注目対象のみ",
+      "properties": {
+        "points_of_interest": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "ore",
+                  "lava",
+                  "water",
+                  "nether_portal",
+                  "end_portal_frame",
+                  "stronghold_block",
+                  "chest",
+                  "crafting_table",
+                  "furnace",
+                  "bed"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "description": "ブロックid(例: minecraft:iron_ore)"
+              },
+              "pos": { "$ref": "common.schema.json#/$defs/BlockPos" },
+              "distance": { "type": "number", "minimum": 0 }
+            },
+            "required": ["kind", "id", "pos", "distance"],
+            "additionalProperties": false
+          }
+        },
+        "hostiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string", "description": "エンティティid(例: minecraft:zombie)" },
+              "distance": { "type": "number", "minimum": 0 },
+              "pos": { "$ref": "common.schema.json#/$defs/Vec3" }
+            },
+            "required": ["type", "distance", "pos"],
+            "additionalProperties": false
+          }
+        },
+        "villagers": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "半径16内の村人の数"
+        }
+      },
+      "required": ["points_of_interest", "hostiles", "villagers"],
+      "additionalProperties": false
+    },
+    "progress": {
+      "type": "object",
+      "properties": {
+        "blaze_rods": { "type": "integer", "minimum": 0 },
+        "ender_pearls": { "type": "integer", "minimum": 0 },
+        "ender_eyes": { "type": "integer", "minimum": 0 },
+        "advancements": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "クリア進行に関係する解除済み実績id(Mod側で注目リストに絞る)"
+        }
+      },
+      "required": ["blaze_rods", "ender_pearls", "ender_eyes", "advancements"],
+      "additionalProperties": false
+    },
+    "current_skill": {
+      "type": ["object", "null"],
+      "description": "実行中スキル。なければnull",
+      "properties": {
+        "command_id": { "type": "string" },
+        "skill": { "type": "string" },
+        "elapsed_ms": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["command_id", "skill", "elapsed_ms"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["message_type", "timestamp_ms", "seq", "reason", "self", "inventory", "equipment", "nearby", "progress", "current_skill"],
+  "unevaluatedProperties": false
+}

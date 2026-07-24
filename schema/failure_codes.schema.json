@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "failure_codes.schema.json",
+  "title": "FailureCode",
+  "description": "スキル失敗理由コード(仕様書§6)。LLMの再計画の入力になるため機械可読かつ網羅的であること。追加はここを先に更新する。",
+  "type": "string",
+  "enum": [
+    "INSUFFICIENT_MATERIALS",
+    "NO_FUEL",
+    "NO_TOOL",
+    "PATH_NOT_FOUND",
+    "TARGET_NOT_FOUND",
+    "TARGET_UNREACHABLE",
+    "INVENTORY_FULL",
+    "AGENT_DIED",
+    "TIMEOUT_STUCK",
+    "INTERRUPTED_BY_NEW_COMMAND",
+    "INTERRUPTED_BY_DISCONNECT",
+    "INVALID_ARGUMENTS",
+    "UNSUPPORTED_ITEM",
+    "CRAFTING_FAILED",
+    "SMELTING_FAILED",
+    "PLACEMENT_OBSTRUCTED",
+    "NO_FOOD",
+    "FLED_FROM_COMBAT",
+    "PORTAL_NOT_FOUND",
+    "PORTAL_BUILD_FAILED",
+    "NO_ENDER_EYE",
+    "DRAGON_FIGHT_ABORTED",
+    "INTERNAL_ERROR"
+  ],
+  "$comment": "コードの意味: INSUFFICIENT_MATERIALS=素材不足 / NO_FUEL=燃料不足 / NO_TOOL=必要ツール未所持 / PATH_NOT_FOUND=経路探索失敗 / TARGET_NOT_FOUND=対象(ブロック・エンティティ)が見つからない / TARGET_UNREACHABLE=対象はあるが到達不能 / INVENTORY_FULL=インベントリ満杯 / AGENT_DIED=実行中に死亡 / TIMEOUT_STUCK=座標変化なし60秒のスタック検知 / INTERRUPTED_BY_NEW_COMMAND=新命令による中断 / INTERRUPTED_BY_DISCONNECT=WebSocket切断による中断 / INVALID_ARGUMENTS=引数不正 / UNSUPPORTED_ITEM=レシピ・対象として未対応のid / CRAFTING_FAILED=クラフト失敗(作業台確保失敗含む) / SMELTING_FAILED=製錬失敗(かまど確保失敗含む) / PLACEMENT_OBSTRUCTED=設置先が塞がっている / NO_FOOD=食料なし / FLED_FROM_COMBAT=戦闘スクリプトが逃走判断で離脱 / PORTAL_NOT_FOUND=使用可能なポータルなし / PORTAL_BUILD_FAILED=ポータル建設失敗 / NO_ENDER_EYE=エンダーアイ未所持 / DRAGON_FIGHT_ABORTED=ドラゴン戦スクリプト中断 / INTERNAL_ERROR=Mod内部エラー"
+}

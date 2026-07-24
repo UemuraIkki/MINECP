@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event.schema.json",
+  "title": "Event",
+  "description": "Mod → ブリッジ。割り込みイベント(仕様書§7.1)。",
+  "type": "object",
+  "allOf": [{ "$ref": "common.schema.json#/$defs/MessageEnvelope" }],
+  "properties": {
+    "message_type": { "const": "event" },
+    "event_type": {
+      "type": "string",
+      "enum": ["death", "respawned", "attacked", "hp_critical", "item_pickup", "advancement"]
+    },
+    "data": { "type": "object" }
+  },
+  "required": ["message_type", "timestamp_ms", "seq", "event_type", "data"],
+  "oneOf": [
+    {
+      "properties": {
+        "event_type": { "const": "death" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "pos": { "$ref": "common.schema.json#/$defs/Vec3" },
+            "dimension": { "$ref": "common.schema.json#/$defs/Dimension" },
+            "cause": { "type": "string", "description": "死因(例: lava, fall, minecraft:zombie)" }
+          },
+          "required": ["pos", "dimension", "cause"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "respawned" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "pos": { "$ref": "common.schema.json#/$defs/Vec3" },
+            "dimension": { "$ref": "common.schema.json#/$defs/Dimension" }
+          },
+          "required": ["pos", "dimension"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "attacked" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "attacker_type": { "type": "string" },
+            "hp": { "type": "number" }
+          },
+          "required": ["attacker_type", "hp"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "hp_critical" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "hp": { "type": "number", "description": "6.0(ハート3個)以下で発火" }
+          },
+          "required": ["hp"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "item_pickup" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "item": { "$ref": "common.schema.json#/$defs/ItemStack" }
+          },
+          "required": ["item"],
+          "additionalProperties": false,
+          "description": "進行上の注目アイテム(ブレイズロッド、エンダーパール、ダイヤ等)のみ発火"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "advancement" },
+        "data": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string", "description": "実績id(例: minecraft:story/enter_the_nether)" }
+          },
+          "required": ["id"],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

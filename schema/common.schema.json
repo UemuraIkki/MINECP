@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.schema.json",
+  "title": "Common definitions",
+  "description": "Mod⇄ブリッジ間の全メッセージで共有する型定義。仕様書§7参照。",
+  "$defs": {
+    "MessageEnvelope": {
+      "type": "object",
+      "description": "全メッセージ共通フィールド",
+      "properties": {
+        "message_type": {
+          "type": "string",
+          "enum": ["observation", "skill_command", "skill_result", "event"]
+        },
+        "timestamp_ms": {
+          "type": "integer",
+          "description": "送信時のUnixエポックミリ秒"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "送信側プロセスごとの単調増加シーケンス番号"
+        }
+      },
+      "required": ["message_type", "timestamp_ms", "seq"]
+    },
+    "Vec3": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" }
+      },
+      "required": ["x", "y", "z"],
+      "additionalProperties": false
+    },
+    "BlockPos": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "z": { "type": "integer" }
+      },
+      "required": ["x", "y", "z"],
+      "additionalProperties": false
+    },
+    "Dimension": {
+      "type": "string",
+      "enum": ["overworld", "nether", "end"]
+    },
+    "ItemStack": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Minecraftアイテムid(例: minecraft:iron_ingot)"
+        },
+        "count": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["id", "count"],
+      "additionalProperties": false
+    },
+    "NamedLocation": {
+      "type": "string",
+      "description": "ブリッジが記憶している名前付き地点",
+      "enum": [
+        "base",
+        "nether_portal_overworld",
+        "nether_portal_nether",
+        "stronghold",
+        "last_death"
+      ]
+    },
+    "Milestone": {
+      "type": "string",
+      "description": "マイルストーンDAG(仕様書§8.1)の各ノード",
+      "enum": [
+        "wood",
+        "wooden_tools",
+        "stone_tools",
+        "iron_gear",
+        "food_secured",
+        "diamond_tools",
+        "nether_portal",
+        "blaze_rods",
+        "ender_pearls",
+        "ender_eyes",
+        "stronghold_found",
+        "portal_activated",
+        "gear_final_check",
+        "dragon_slain"
+      ]
+    }
+  }
+}

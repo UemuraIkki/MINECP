@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill_command.schema.json",
+  "title": "SkillCommand",
+  "description": "ブリッジ → Mod。スキル実行命令(仕様書§6)。同時実行は1スキルのみ。実行中に新命令を受けた場合、Modは現行スキルをINTERRUPTED_BY_NEW_COMMANDで失敗終了させ新命令を優先する。",
+  "type": "object",
+  "allOf": [{ "$ref": "common.schema.json#/$defs/MessageEnvelope" }],
+  "properties": {
+    "message_type": { "const": "skill_command" },
+    "command_id": {
+      "type": "string",
+      "description": "命令の一意ID(UUID推奨)。skill_resultで返送される"
+    },
+    "skill": {
+      "type": "string",
+      "enum": [
+        "goto",
+        "mine",
+        "craft",
+        "smelt",
+        "place",
+        "attack",
+        "eat",
+        "equip",
+        "use_portal",
+        "build_portal",
+        "throw_ender_eye",
+        "fight_dragon"
+      ]
+    },
+    "args": { "type": "object" }
+  },
+  "required": ["message_type", "timestamp_ms", "seq", "command_id", "skill", "args"],
+  "oneOf": [
+    {
+      "properties": {
+        "skill": { "const": "goto" },
+        "args": {
+          "type": "object",
+          "properties": {
+            "target": {
+              "oneOf": [
+                { "$ref": "common.schema.json#/$defs/BlockPos" },
+                { "$ref": "common.schema.json#/$defs/NamedLocation" }
+              ],
+              "description": "座標(ブリッジが名前付き地点を座標解決して送ってもよい)または名前付き地点"
+            }
+          },
+          "required": ["target"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "mine" },
+        "args": {
+          "type": "object",
+          "properties": {
+            "block": {
+              "type": "string",
+              "description": "ブロックid(minecraft:iron_ore)またはファミリー名(log, stone, iron_ore, diamond_ore 等。対応表はMod実装が保持)"
+            },
+            "count": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["block", "count"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "craft" },
+        "args": {
+          "type": "object",
+          "properties": {
+            "item": { "type": "string", "description": "アイテムid" },
+            "count": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["item", "count"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "smelt" },
+        "args": {
+          "type": "object",
+          "properties": {
+            "item": { "type": "string", "description": "産出したいアイテムid(例: minecraft:iron_ingot)" },
+            "count": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["item", "count"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "place" },
+        "args": {
+          "type": "object",
+          "properties": {
+            "block": { "type": "string", "description": "設置するブロックid" },
+            "offset": {
+              "$ref": "common.schema.json#/$defs/BlockPos",
+              "description": "エージェント現在位置からの相対位置"
+            }
+          },
+          "required": ["block", "offset"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "attack" },
+        "args": {
+          "type": "object",
+          "properties": {
+            "target_type": {
+              "type": "string",
+              "description": "エンティティid(minecraft:blaze)またはカテゴリ(nearest_hostile)"
+            }
+          },
+          "required": ["target_type"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "eat" },
+        "args": { "type": "object", "additionalProperties": false }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "equip" },
+        "args": {
+          "type": "object",
+          "properties": {
+            "item": { "type": "string", "description": "装備するアイテムid。防具は適切なスロットへ、それ以外はメインハンドへ" }
+          },
+          "required": ["item"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "use_portal" },
+        "args": {
+          "type": "object",
+          "properties": {
+            "portal_type": { "type": "string", "enum": ["nether", "end"] }
+          },
+          "required": ["portal_type"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "build_portal" },
+        "args": { "type": "object", "additionalProperties": false }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "throw_ender_eye" },
+        "args": { "type": "object", "additionalProperties": false }
+      }
+    },
+    {
+      "properties": {
+        "skill": { "const": "fight_dragon" },
+        "args": { "type": "object", "additionalProperties": false }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill_result.schema.json",
+  "title": "SkillResult",
+  "description": "Mod → ブリッジ。スキル実行結果(仕様書§7.1)。",
+  "type": "object",
+  "allOf": [{ "$ref": "common.schema.json#/$defs/MessageEnvelope" }],
+  "properties": {
+    "message_type": { "const": "skill_result" },
+    "command_id": {
+      "type": "string",
+      "description": "対応するskill_commandのcommand_id"
+    },
+    "status": { "type": "string", "enum": ["success", "failure"] },
+    "failure_code": {
+      "$ref": "failure_codes.schema.json",
+      "description": "status=failureのとき必須"
+    },
+    "detail": {
+      "type": "string",
+      "description": "人間可読の補足(LLMプロンプトにも含める)"
+    },
+    "data": {
+      "type": "object",
+      "description": "スキル固有の返却データ。throw_ender_eye: {\"direction\": Vec3(単位ベクトル), \"eye_survived\": bool}。mine: {\"mined_count\": int}。attack: {\"kills\": int}。",
+      "additionalProperties": true
+    }
+  },
+  "required": ["message_type", "timestamp_ms", "seq", "command_id", "status"],
+  "if": {
+    "properties": { "status": { "const": "failure" } }
+  },
+  "then": {
+    "required": ["failure_code"]
+  },
+  "unevaluatedProperties": false
+}

@@ -1,0 +1,33 @@
+# Logs (spec §9: git管理外)
+logs/*
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Java / Gradle
+mod/.gradle/
+mod/build/
+mod/run/
+mod/out/
+mod/.idea/
+mod/*.iml
+mod/bin/
+mod/.classpath
+mod/.project
+mod/.settings/
+
+# Bridge runtime state
+bridge/state/
+bridge/*.log
+
+# OS
+.DS_Store
+Thumbs.db
