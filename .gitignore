@@ -31,3 +31,6 @@ bridge/*.log
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code個人設定
+.claude/settings.local.json
