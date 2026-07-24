@@ -627,7 +627,14 @@ def to_wire(message: BaseModel) -> dict[str, Any]:
     them explicitly.
     """
 
-    return message.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    data = message.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    # 判別フィールド(message_type / skill / event_type)はLiteralデフォルトのため
+    # exclude_unsetで落ちうるが、ワイヤ上は必須なので常に含める。
+    for field_name in ("message_type", "skill", "event_type"):
+        if field_name in type(message).model_fields and field_name not in data:
+            value = getattr(message, field_name)
+            data[field_name] = value.value if isinstance(value, Enum) else value
+    return data
 
 
 def parse_incoming(raw: dict[str, Any]) -> IncomingMessage:
