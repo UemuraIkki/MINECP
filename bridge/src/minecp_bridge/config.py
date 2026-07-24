@@ -77,14 +77,20 @@ _TYPE_CASTERS = {
 
 
 def _apply_overrides(cfg: BridgeConfig, overrides: dict[str, Any]) -> None:
-    valid_fields = {f.name: f.type for f in fields(cfg)}
+    valid_fields = {f.name for f in fields(cfg)}
     for key, value in overrides.items():
         if key not in valid_fields:
             continue
         current = getattr(cfg, key)
-        caster = type(current) if current is not None else str
-        if caster in _TYPE_CASTERS and not isinstance(value, caster):
-            value = _TYPE_CASTERS[caster](value)
+        # isinstance, not `type(current) in _TYPE_CASTERS`: the Path fields'
+        # defaults are actually WindowsPath/PosixPath, which never equals the
+        # plain `Path` key, so an exact-type lookup silently skipped casting
+        # and left overridden path fields as raw strings.
+        for expected_type, cast in _TYPE_CASTERS.items():
+            if isinstance(current, expected_type):
+                if not isinstance(value, expected_type):
+                    value = cast(value)
+                break
         setattr(cfg, key, value)
 
 

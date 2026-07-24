@@ -7,11 +7,12 @@ import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
 /**
- * Network-independent fallback: walk directly toward the requested coordinate
- * and apply a vanilla-height jump when the next foot block is obstructed.
- *
- * TODO(Automatone): Replace this in production by enabling Automatone 0.11.0;
- * this deliberately does not search around cliffs, walls, or hazards.
+ * Fallback used when Automatone is absent or its reflective API detection
+ * fails (see {@link AutomatonePathfinder}): walk directly toward the
+ * requested coordinate and apply a vanilla-height jump when the next foot
+ * block is obstructed. It deliberately does not search around cliffs,
+ * walls, or hazards; enable Automatone (`-Pwith_automatone=true`, and place
+ * it in a production server's mods/) for real pathfinding.
  */
 public final class StraightLinePathfinder implements IPathfinder {
     private BlockPos target;

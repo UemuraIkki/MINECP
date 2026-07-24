@@ -60,7 +60,6 @@ class MilestoneContext:
 
     has_nether_portal: bool = False
     has_stronghold_location: bool = False
-    equipment_finalized: bool = False
 
 
 def _has_any(item_counts: dict[str, int], ids: set[str]) -> bool:
@@ -119,7 +118,7 @@ def is_completed(
             equipped_by_slot[slot] in acceptable
             for slot, acceptable in _DIAMOND_OR_BETTER_ARMOR_BY_SLOT.items()
         )
-        return context.equipment_finalized or (has_diamond_or_better_sword and full_diamond_or_better_armor)
+        return has_diamond_or_better_sword and full_diamond_or_better_armor
     if milestone is Milestone.dragon_slain:
         return _DRAGON_SLAIN_ADVANCEMENT in advancements
     raise AssertionError(f"unhandled milestone: {milestone}")

@@ -199,10 +199,6 @@ class BridgeState(BaseModel):
     def get_memory(self, location: NamedLocation | str) -> BlockPos | None:
         return self.memory_coords.get(NamedLocation(location).value)
 
-    def mark_milestone_completed(self, milestone: Milestone) -> None:
-        if milestone not in self.completed_milestones:
-            self.completed_milestones.append(milestone)
-
     def set_completed_milestones(self, milestones: set[Milestone] | list[Milestone]) -> None:
         # Preserve DAG order for readability in prompts/logs.
         ordered = [m for m in Milestone if m in set(milestones)]

@@ -478,22 +478,6 @@ public final class SkillManager {
         }
     }
 
-    private static final class UnsupportedTask extends BaseTask {
-        private final FailureCode failureCode;
-        private final String detail;
-
-        private UnsupportedTask(String commandId, String skill, FailureCode failureCode, String detail) {
-            super(commandId, skill);
-            this.failureCode = failureCode;
-            this.detail = detail;
-        }
-
-        @Override
-        public Outcome tick(ServerPlayerEntity player, IPathfinder pathfinder) {
-            return Outcome.failure(failureCode, detail);
-        }
-    }
-
     private static final class GotoTask extends BaseTask {
         private final BlockPos target;
         private boolean started;
@@ -1403,11 +1387,7 @@ public final class SkillManager {
             } else {
                 pathfinder.cancel(player);
                 pathing = false;
-                if (player.getAttackCooldownProgress(0.5F) >= 0.9F) {
-                    player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, target.getEyePos());
-                    player.attack(target);
-                    player.swingHand(Hand.MAIN_HAND);
-                }
+                meleeAttackIfReady(player, target);
             }
             ticks++;
             if (ticks > 20 * 90) {
@@ -1942,14 +1922,7 @@ public final class SkillManager {
                     equipBestWeapon(player);
                     weaponSelected = true;
                 }
-                if (player.getAttackCooldownProgress(0.5F) >= 0.9F) {
-                    player.lookAt(
-                            net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,
-                            crystal.getEyePos()
-                    );
-                    player.attack(crystal);
-                    player.swingHand(Hand.MAIN_HAND);
-                }
+                meleeAttackIfReady(player, crystal);
                 return null;
             }
 
@@ -1999,14 +1972,7 @@ public final class SkillManager {
             if (player.distanceTo(head) <= 6.0 && player.canSee(head)) {
                 pathfinder.cancel(player);
                 pathing = false;
-                if (player.getAttackCooldownProgress(0.5F) >= 0.9F) {
-                    player.lookAt(
-                            net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES,
-                            head.getEyePos()
-                    );
-                    player.attack(head);
-                    player.swingHand(Hand.MAIN_HAND);
-                }
+                meleeAttackIfReady(player, head);
                 return null;
             }
 
@@ -2148,6 +2114,19 @@ public final class SkillManager {
         if (bestSlot >= 0) {
             moveToMainHand(player, bestSlot);
         }
+    }
+
+    /**
+     * Strikes {@code target} in melee once the attack cooldown is ready.
+     * Shared by every in-range melee branch (combat, crystals, dragon head).
+     */
+    private static void meleeAttackIfReady(ServerPlayerEntity player, Entity target) {
+        if (player.getAttackCooldownProgress(0.5F) < 0.9F) {
+            return;
+        }
+        player.lookAt(net.minecraft.command.argument.EntityAnchorArgumentType.EntityAnchor.EYES, target.getEyePos());
+        player.attack(target);
+        player.swingHand(Hand.MAIN_HAND);
     }
 
     private static BlockPos findNearestBlock(
