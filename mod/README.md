@@ -93,7 +93,9 @@ All 12 schema-registered skills have deterministic executors:
 
 - `goto`: pathfinder movement to an explicit `BlockPos`
 - `mine`: incremental radius-24 target search, approach, tool selection, break,
-  repeat, and `data.mined_count`
+  deterministic drop collection (mining reach exceeds vanilla item-pickup
+  range, so drops are inserted into inventory directly rather than relying on
+  the fake player walking over them), repeat, and `data.mined_count`
 - `craft`: deterministic recipe selection, ingredient reservation/consumption,
   2×2 versus crafting-table check, capacity check, and output insertion
 - `smelt`: recipe-based raw-material allocation, empty-furnace discovery or

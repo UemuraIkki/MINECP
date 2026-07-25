@@ -585,6 +585,7 @@ public final class SkillManager {
                     if (!broke || predicate.test(player.getServerWorld().getBlockState(target))) {
                         return Outcome.failure(FailureCode.TARGET_UNREACHABLE, "Target block could not be broken");
                     }
+                    collectNearbyDrops(player, target);
                     mined++;
                     target = null;
                     resetSearch(player);
@@ -703,6 +704,33 @@ public final class SkillManager {
                 }
             }
             return Outcome.failure(FailureCode.NO_TOOL, "No suitable tool is available for the target block");
+        }
+
+        /**
+         * Directly collects item drops near a just-broken block into the
+         * player's inventory. Mining is allowed from up to 5 blocks away
+         * (the reach check above), which is well outside vanilla's item
+         * pickup collision range, so a real player would routinely break a
+         * block and then walk off leaving the drop uncollected forever.
+         * Rather than making the task path onto the exact drop position
+         * afterward, this collects deterministically the same way
+         * craft/smelt already manage inventory directly.
+         */
+        private static void collectNearbyDrops(ServerPlayerEntity player, BlockPos brokenAt) {
+            List<ItemEntity> drops = player.getServerWorld().getEntitiesByClass(
+                    ItemEntity.class,
+                    new Box(Vec3d.ofCenter(brokenAt), Vec3d.ofCenter(brokenAt)).expand(6.0),
+                    ItemEntity::isAlive
+            );
+            for (ItemEntity drop : drops) {
+                ItemStack stack = drop.getStack();
+                player.getInventory().insertStack(stack);
+                if (stack.isEmpty()) {
+                    drop.discard();
+                } else {
+                    drop.setStack(stack);
+                }
+            }
         }
     }
 
