@@ -95,6 +95,6 @@ ws_port = 8765
 
 ## 未解決事項
 
-- 実機結合テスト(実際のMinecraft開発サーバー・実WebSocket・実Ollama、モデルは既定の`qwen3:4b`)を1回実施済み。Fake Playerスポーン→observation→LLM決定→skill_command→Mod実行→skill_resultの一周と、mine失敗(TIMEOUT_STUCK)からgoto baseへのフォールバック復帰までを確認した。ただし1回のみの確認であり、長時間の継続実行やAutomatone有効時の挙動は未検証。
+- 実機結合テスト(実際のMinecraft開発サーバー・実WebSocket・実Ollama、モデルは既定の`qwen3:4b`)を複数回実施。この過程で「Fake Playerが`setVelocity`だけでは一切移動しない」という重大バグを検出・修正した(詳細は`mod/src/main/java/dev/minecp/path/StraightLinePathfinder.java`のクラスコメント)。修正後、実際に移動することを直接WebSocketクライアントで確認済み。ただし長時間の継続実行(craft以降のマイルストーン到達)やAutomatone有効時の挙動は依然未検証。
 - 要塞の三角測量(上記`stronghold_found`の項)は、投擲2点が16ブロック以上離れ、かつ2本の光線が実際に交差する(平行に近くない・交点が両投擲点より前方にある)場合のみ推定値を返す簡易ヒューリスティック。y座標は常にプレイヤーの現在yを使う暫定値であり、実際の深さではない。
 - 実際のOllama tool calling応答フォーマットは環境(Ollamaバージョン・モデル)によって`arguments`が文字列/オブジェクトいずれで返るか揺れることがある。`llm.py`は両方を許容している。`qwen3:4b`ではオブジェクト形式で返ることを実機確認済みだが、文字列形式のケースは依然未検証。

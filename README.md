@@ -60,5 +60,6 @@ Mod起動後、Fake Playerが自動スポーンし、観測がブリッジへ流
 ## 現在の状態
 
 - スキーマ・ブリッジ・Modを実装済み(ブリッジはpytest 83件パス、Modはビルド成功)。全12スキル(goto/mine/craft/smelt/place/attack/eat/equip/use_portal/build_portal/throw_ender_eye/fight_dragon)に決定論的executorが揃っている
-- 実機疎通を確認済み: 実際のMinecraft開発サーバー(Fake Playerスポーン)⇄実WebSocket⇄ブリッジ⇄実Ollama(tool calling)の一周を確認。mine失敗(TIMEOUT_STUCK、Automatone未使用時のフォールバック経路が原因)→未知の名前付き地点への複数回のgoto失敗→goto baseへのフォールバック成功、という決定論的な失敗復帰の流れも実機で確認済み
+- 実機疎通を確認済み: 実際のMinecraft開発サーバー(Fake Playerスポーン)⇄実WebSocket⇄ブリッジ⇄実Ollama(tool calling)の一周を確認。未知の名前付き地点への複数回のgoto失敗→goto baseへのフォールバック成功という決定論的な失敗復帰の流れも実機で確認済み
+- **重大バグを検出・修正済み**: 直接構築したFake Player(`ServerPlayerEntity`)は`setVelocity`だけでは一切移動しない(実クライアントからの移動パケットが無いため、通常のプレイヤー物理は自力で位置を更新しない)ことが実機診断で判明。`StraightLinePathfinder`を`Entity#move`を毎tick明示的に呼ぶ実装に変更し、実機で実際に移動することを確認済み。直線+ジャンプのフォールバックである以上、壁や崖を迂回できない制約自体は残る
 - 次ステップ: `with_automatone=true`を既定にする(現状は直線+ジャンプのフォールバックのみで経路が詰まりやすい)、要塞三角測量の精度向上、`gear_final_check`のMod側明示シグナル化(仕様書・スキーマ更新が前提)
