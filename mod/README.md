@@ -116,6 +116,16 @@ Every accepted command terminates in a schema-shaped `skill_result`. A newer
 valid command aborts the old command with `INTERRUPTED_BY_NEW_COMMAND`. No
 position change for 60 continuous seconds aborts it with `TIMEOUT_STUCK`.
 
+Health is checked every tick regardless of the active skill. `attack` and
+`fight_dragon` already flee or abort at critical health themselves, aimed at
+the specific threat they are tracking. Every other skill has no health
+awareness of its own, and the bridge's own reaction requires an LLM
+round-trip far slower than a hostile mob's attack cadence — so at or below 6
+HP, `SkillManager` unconditionally cancels whatever skill is running and
+installs a deterministic panic flee (run from the nearest hostile, or
+straight back if none is observed) that reports `FLED_FROM_COMBAT` on its
+own once clear or after a fixed timeout.
+
 ## Observation performance and schema rules
 
 The nearby radius is exactly 16 blocks. Instead of a full scan per message, the

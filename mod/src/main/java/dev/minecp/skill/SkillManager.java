@@ -71,6 +71,7 @@ public final class SkillManager {
             "message_type", "timestamp_ms", "seq", "command_id", "skill", "args"
     );
     private static final long STUCK_TIMEOUT_MS = 60_000L;
+    private static final float CRITICAL_HEALTH = 6.0F;
 
     private final Supplier<ServerPlayerEntity> playerSupplier;
     private final IPathfinder pathfinder;
@@ -160,6 +161,24 @@ public final class SkillManager {
                     "Fake player position did not change for 60 continuous seconds"
             ));
             return;
+        }
+
+        // attack/fight_dragon already flee or abort on critical health themselves,
+        // aimed at the specific threat they're tracking; every other skill has no
+        // health awareness at all and would otherwise keep mining/crafting/walking
+        // while being killed, since the bridge's own reaction requires an LLM
+        // round-trip that is far slower than a hostile mob's attack cadence.
+        if (player.getHealth() <= CRITICAL_HEALTH
+                && !(active instanceof AttackTask)
+                && !(active instanceof FightDragonTask)
+                && !(active instanceof PanicFleeTask)) {
+            logger.warn(
+                    "Critical health ({}) during skill {} ({}); deterministic panic flee is overriding it",
+                    player.getHealth(), active.skill(), active.commandId()
+            );
+            ActiveTask overridden = active;
+            overridden.cancel(player, pathfinder);
+            active = new PanicFleeTask(overridden.commandId(), overridden.skill());
         }
 
         try {
@@ -1424,6 +1443,51 @@ public final class SkillManager {
                         FailureCode.FLED_FROM_COMBAT,
                         "Disengaged after reaching the fixed critical-health threshold",
                         attackData(0)
+                );
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Deterministic emergency override installed by {@link SkillManager#tick}
+     * in place of whatever skill was running when health dropped critical.
+     * Runs away from the nearest hostile (or straight back if none is
+     * observed) without waiting for a bridge decision.
+     */
+    private static final class PanicFleeTask extends BaseTask {
+        private boolean pathing;
+        private int fleeTicks;
+
+        private PanicFleeTask(String commandId, String skill) {
+            super(commandId, skill);
+        }
+
+        @Override
+        public Outcome tick(ServerPlayerEntity player, IPathfinder pathfinder) {
+            Entity nearestHostile = findCombatTarget(player, "nearest_hostile");
+            Vec3d away = nearestHostile == null
+                    ? player.getRotationVector().multiply(-1.0)
+                    : player.getPos().subtract(nearestHostile.getPos());
+            if (away.horizontalLengthSquared() < 0.0001) {
+                away = new Vec3d(1.0, 0.0, 0.0);
+            }
+            Vec3d horizontal = new Vec3d(away.x, 0.0, away.z).normalize();
+            if (!pathing) {
+                BlockPos escape = BlockPos.ofFloored(player.getPos().add(horizontal.multiply(10.0)));
+                pathfinder.start(player, escape);
+                pathing = true;
+            }
+            IPathfinder.Status status = pathfinder.tick(player);
+            if (status == IPathfinder.Status.FAILED || status == IPathfinder.Status.IDLE) {
+                player.setVelocity(horizontal.x * 0.35, player.getVelocity().y, horizontal.z * 0.35);
+                player.velocityModified = true;
+            }
+            fleeTicks++;
+            if ((nearestHostile != null && player.distanceTo(nearestHostile) >= 10.0) || fleeTicks >= 40) {
+                return Outcome.failure(
+                        FailureCode.FLED_FROM_COMBAT,
+                        "Deterministic panic flee triggered by critical health while executing " + skill()
                 );
             }
             return null;
